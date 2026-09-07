@@ -497,6 +497,8 @@ def _bmdb_render(base: str, edits: dict, ctx: dict) -> str:
 
 def _bmdb_repair(text: str, ctx: dict) -> str:
     from . import modeldb as mdb
+    if text.lstrip().lower().startswith("type"):
+        return text
     return mdb.repair_prefixes(ctx.get("base") or "", text, pad=bool(ctx.get("pad")))
 
 
@@ -930,7 +932,9 @@ def entry_document(mod, name: str) -> Doc:
     if entry is None:
         raise KeyError(_i18n.msg("eng.codeview.no_model_entry_in", "no model entry {name} in {name2}", name=repr(name), name2=mod.name))
     doc = parse("bmdb", entry.raw, {"pad": entry.first_entry_pad, "base": entry.raw})
-    doc.note = ("every string here is written `<length> <text>` - edit a path and "
+    doc.note = ("plain descriptor entry - edit paths directly"
+                if mod.modeldb.format == "dmb" else
+                "every string here is written `<length> <text>` - edit a path and "
                 "the length beside it needs to follow, which the ⟲ button does")
     return doc
 

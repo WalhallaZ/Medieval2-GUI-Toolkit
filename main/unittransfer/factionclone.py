@@ -1002,7 +1002,8 @@ def review_mentions(mod, src: str) -> List[Dict]:
 
 def clone_file(data: Path, job: Job, src: str, new: str, label: str = "",
                overlay: Optional[Dict[str, str]] = None,
-               text_opts: Optional[Dict] = None) -> FileEdit:
+               text_opts: Optional[Dict] = None,
+               rel: str | None = None) -> FileEdit:
     """One job's cloner run over one file: the new text, or why there is none.
 
     Shared by the clone and by 21's repair (:mod:`unittransfer.factionaudit`),
@@ -1015,10 +1016,11 @@ def clone_file(data: Path, job: Job, src: str, new: str, label: str = "",
     on top of the one before it. ``text_opts`` is ``rename`` and ``titles`` for
     :func:`clone_expanded`.
     """
-    path = data / job.rel
-    ahead = (overlay or {}).get(job.rel)
+    rel = rel or job.rel
+    path = data / rel
+    ahead = (overlay or {}).get(rel)
     if ahead is None and not path.is_file():
-        return FileEdit(job.rel, job.label, note=job.note,
+        return FileEdit(rel, job.label, note=job.note,
                         skipped="this mod has no such file")
     try:
         original = ahead if ahead is not None else kb.read_text(path, job.encoding)
@@ -1065,9 +1067,9 @@ def clone_file(data: Path, job: Job, src: str, new: str, label: str = "",
         else:                                     # unreachable
             after, n = before, 0
     except (fr.RecordError, ValueError, OSError, UnicodeError) as e:
-        return FileEdit(job.rel, job.label, note=job.note,
+        return FileEdit(rel, job.label, note=job.note,
                         skipped=f"could not be read: {e}")
-    edit = FileEdit(job.rel, job.label, encoding=job.encoding, note=job.note,
+    edit = FileEdit(rel, job.label, encoding=job.encoding, note=job.note,
                     count=n)
     if n and after != before:
         edit.text = kb.to_newline(after, newline) if flat else after
@@ -1153,15 +1155,16 @@ def plan(mod, body: dict, overlay: Optional[Dict[str, str]] = None) -> ClonePlan
                  "titles": body.get("titles") if isinstance(body.get("titles"), dict) else None,
                  "art": want_art, "logos": logos}
     for job in JOBS + campaign_jobs(mod):
-        edit = clone_file(data, job, src, new, label, overlay, text_opts)
+        rel = mod.battle_models_rel if job.how == "modeldb" else job.rel
+        edit = clone_file(data, job, src, new, label, overlay, text_opts, rel)
         p.edits.append(edit)
         if edit.skipped and job.required and not edit.count:
-            if not (data / job.rel).is_file() and job.rel not in (overlay or {}):
-                p.errors.append(_i18n.msg("eng.factionclone.has_no_2", "{getattr} has no {rel}", getattr=getattr(mod, 'name', '?'), rel=job.rel))
+            if not (data / rel).is_file() and rel not in (overlay or {}):
+                p.errors.append(_i18n.msg("eng.factionclone.has_no_2", "{getattr} has no {rel}", getattr=getattr(mod, 'name', '?'), rel=rel))
             elif edit.skipped.startswith("could not be read"):
-                p.errors.append(f"{job.rel}: {edit.skipped}")
+                p.errors.append(f"{rel}: {edit.skipped}")
         if edit.text:
-            p.changes.append(f"{job.label} ({Path(job.rel).name}) - {edit.count} "
+            p.changes.append(f"{job.label} ({Path(rel).name}) - {edit.count} "
                              + ("entry" if edit.count == 1 else "entries"))
     for edit in logo_edits:
         p.edits.append(edit)
