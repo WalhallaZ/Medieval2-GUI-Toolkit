@@ -1577,6 +1577,7 @@ function wire(){
   // matched nothing, so the header's own button opened an empty log.
   logBtn.onclick=()=>openLog();
   selBtn.onclick=toggleSelMode; batchBtn.onclick=openBatch; clearSelBtn.onclick=clearSelection;
+  deleteSelectedBtn.onclick=edBatchDeleteDialog;
   packBtn.onclick=()=>packExport([...state.selected]); importPackBtn.onclick=packImport;
   unusedUnitsBtn.onclick=openUnusedUnits;
   cleanBtn.onclick=()=>cleanupFor(state.mode)(); unusedOnly.onchange=render;
@@ -1628,9 +1629,10 @@ function applyMode(persist){
   // The map has nothing to search until 16g brings the query engine, and an
   // input that does nothing is worse than no input.
   search.style.display=(home||state.mode==='campmap'||state.mode==='changes'||state.mode==='health')?'none':'';
-  selBtn.style.display=one?'none':'';
+  selBtn.style.display=(!one||edit)?'inline-block':'none';
   batchBtn.style.display=(!one&&state.selMode)?'inline-block':'none';
-  clearSelBtn.style.display=(!one&&state.selMode&&state.selected.size)?'inline-block':'none';
+  deleteSelectedBtn.style.display=(edit&&state.selMode&&state.selected.size)?'inline-block':'none';
+  clearSelBtn.style.display=((!one||edit)&&state.selMode&&state.selected.size)?'inline-block':'none';
   // A pack is made from the SOURCE mod and imported into the destination, so
   // both live in transfer mode - which is also the only mode where "the other
   // mod" is a thing at all.
@@ -1671,7 +1673,7 @@ function applyMode(persist){
                     :fac?'Search factions…'
                     :raw?'Search file names…':'Search…';
   document.title=modeDef(state.mode).name+' · Medieval 2 GUI Toolkit';
-  if(one&&state.selMode)toggleSelMode();
+  if(one&&!edit&&state.selMode)toggleSelMode();
   // A single-mod mode mirrors the destination onto the source, but the pick the
   // user made in Transfer is remembered rather than overwritten - both in
   // `xferDst` and in the persisted setting, so neither this switch nor the next
@@ -1710,7 +1712,7 @@ function applyMode(persist){
 function toggleSelMode(){state.selMode=!state.selMode;document.body.classList.toggle('selmode',state.selMode);
   selBtn.classList.toggle('on',state.selMode);
   paintSelection();
-  batchBtn.style.display=state.selMode?'inline-block':'none';
+  batchBtn.style.display=(state.mode==='transfer'&&state.selMode)?'inline-block':'none';
   updateBatchBtn();}
 function clearSelection(){state.selected.clear();paintSelection();updateBatchBtn();}
 // every card of every selected unit, since one unit can render under several groups
@@ -1720,6 +1722,8 @@ function updateBatchBtn(){batchBtn.textContent=`Transfer selected (${state.selec
   const on=state.selMode&&state.selected.size?'inline-block':'none';
   clearSelBtn.style.display=on;
   packBtn.style.display=state.mode==='transfer'?on:'none';
+  deleteSelectedBtn.style.display=state.mode==='edit'?on:'none';
+  deleteSelectedBtn.textContent=`Delete selected (${state.selected.size})`;
   packBtn.textContent=`📦 Export pack (${state.selected.size})`;}
 
 function unitMatches(u){
