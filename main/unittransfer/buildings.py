@@ -2394,7 +2394,7 @@ def apply_edit(plan: BuildingPlan) -> Dict:
     if plan.eop_texts:
         eop.write_split(mod, plan.eop_texts, (), backup_root, manifest)
     if plan.modeldb_text:
-        write_text("unit_models/battle_models.modeldb", plan.modeldb_text,
+        write_text(mod.battle_models_rel, plan.modeldb_text,
                    modeldb_mod.ENCODING)
 
     rec = {

@@ -1541,6 +1541,9 @@ def export_modeldb_text(mod: Mod, names: Sequence[str]) -> str:
     Reuses each entry's verbatim source text, so the export is byte-identical to
     what was cut out of the mod - that is what makes copying it back safe.
     """
+    if mod.modeldb.format == "dmb":
+        from . import dmb
+        return dmb.export_text(mod, names)
     drop = {n.lower() for n in names}
     kept = [e for e in mod.modeldb.entries if e.name in drop]
     src = mod.modeldb
@@ -1666,8 +1669,8 @@ def apply_cleanup(plan: CleanupPlan, progress: Progress = None) -> Dict:
         say(74, "rewriting descr_mount.txt")
         write_text("descr_mount.txt", plan.mount_text, mounts_mod.ENCODING)
     if plan.modeldb_touched:
-        say(76, "rewriting battle_models.modeldb")
-        write_text("unit_models/battle_models.modeldb", _modeldb_without(plan),
+        say(76, f"rewriting {mod.modeldb_path.name}")
+        write_text(mod.battle_models_rel, _modeldb_without(plan),
                    modeldb.ENCODING)
     n_deletes = len(plan.deletes)
     for i, rel in enumerate(plan.deletes):
@@ -2245,7 +2248,7 @@ def _restore_entries(mod: Mod, picks: Sequence[dict], runs: Dict[str, dict],
         text = db.to_text()
     finally:
         db.entries = original
-    rel = "unit_models/battle_models.modeldb"
+    rel = mod.battle_models_rel
     target = mod.data / rel
     bpath = backup_root / "data" / rel
     bpath.parent.mkdir(parents=True, exist_ok=True)

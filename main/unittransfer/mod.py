@@ -7,6 +7,7 @@ EDU / localisation / modeldb databases on demand.
 from __future__ import annotations
 
 import os
+import re
 import time
 from functools import cached_property
 from pathlib import Path
@@ -78,6 +79,43 @@ class Mod:
 
     @property
     def modeldb_path(self) -> Path:
+        """The active battle-model source.
+
+        The descriptor is an M2EX opt-in: the mod must be marked M2EX and its
+        ``descr_caps_ex.txt`` must select ``model_battle_source text``.  A loose
+        descriptor by itself never changes an existing mod's source of truth.
+        """
+        dmb = self.data / "descr_model_battle.txt"
+        return dmb if self.uses_descr_model_battle() else self.legacy_modeldb_path
+
+    @property
+    def descr_caps_ex_path(self) -> Path:
+        """M2EX's optional runtime-capability settings file."""
+        return self.data / "descr_caps_ex.txt"
+
+    def uses_descr_model_battle(self) -> bool:
+        """Whether this mod explicitly selected the text battle-model source."""
+        dmb = self.data / "descr_model_battle.txt"
+        if not self.m2ex or not dmb.is_file() or not self.descr_caps_ex_path.is_file():
+            return False
+        try:
+            caps = self.descr_caps_ex_path.read_text(encoding=modeldb.ENCODING)
+        except (OSError, UnicodeError):
+            return False
+        # Only horizontal whitespace separates the two tokens: a setting split
+        # across lines is not a valid setting, even though ``\s`` would match it.
+        return bool(re.search(
+            r"(?mi)^[ \t]*model_battle_source[ \t]+text[ \t]*(?:;[^\r\n]*)?\r?$",
+            caps))
+
+    @property
+    def battle_models_rel(self) -> str:
+        """Active battle-model path relative to data/, for transactional writes."""
+        return "descr_model_battle.txt" if self.modeldb_path.name.lower() == "descr_model_battle.txt" else "unit_models/battle_models.modeldb"
+
+    @property
+    def legacy_modeldb_path(self) -> Path:
+        """The optional old archive; never selected while a descriptor exists."""
         return self.data / "unit_models" / "battle_models.modeldb"
 
     @property

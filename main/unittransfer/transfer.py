@@ -1674,6 +1674,15 @@ def plan_transfer(source: Mod, unit_type: str, dest: Mod,
 
     plan = TransferPlan(unit_type=unit_type, dictionary=unit.dictionary,
                         source=source, dest=dest, options=opts)
+    # Raw records are intentionally preserved while transferring.  Mixing the
+    # archive and descriptor formats would therefore paste one format into the
+    # other. Refuse clearly instead of producing a game file that only looks OK.
+    if source.modeldb.format != dest.modeldb.format:
+        plan.errors.append(
+            "source and destination use different battle-model formats "
+            f"({source.modeldb.format} vs {dest.modeldb.format}); convert one "
+            "mod first, then transfer.")
+        return plan
 
     # ---- base templating / replacing an existing unit ----
     # Both work the same way - a destination unit supplies the stat fields - and
@@ -2397,7 +2406,7 @@ def apply_transfer(plan: TransferPlan) -> Dict:
         db.entries.extend(appended)
         text = db.to_text()
         del db.entries[base:]          # keep cached db pristine
-        write_text("unit_models/battle_models.modeldb", text, modeldb.ENCODING)
+        write_text(dest.battle_models_rel, text, modeldb.ENCODING)
 
     # ---- 3b) mount definition (descr_mount.txt) ----
     if plan.mount_raw:

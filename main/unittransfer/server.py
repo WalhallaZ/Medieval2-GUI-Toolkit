@@ -767,6 +767,7 @@ class Registry:
         """
         sig = []
         for p in (mod.edu_path, mod.export_units_path, mod.modeldb_path,
+                  mod.descr_caps_ex_path,
                   mod.descr_mount_path, mod.descr_projectile_path,
                   mod.descr_engines_path, mod.descr_mounted_engines_path,
                   mod.descr_engine_skeleton_path, mod.expanded_path,
@@ -1216,7 +1217,7 @@ def _edit_payload(plan) -> dict:
         "errors": plan.errors,
         "files_written": ([f for f, on in (("export_descr_unit.txt", plan.edu_text),
                                            ("text/export_units.txt", plan.loc_text),
-                                           ("unit_models/battle_models.modeldb",
+                                           (plan.mod.battle_models_rel,
                                             plan.modeldb_touched)) if on]),
         # every other file a `type` rename reaches, with how many lines in each
         "ref_counts": [{"file": f, "hits": n} for f, n in plan.ref_counts],
@@ -3484,7 +3485,7 @@ class Handler(BaseHTTPRequestHandler):
         log.info("BMDB   ownership fix (%s) on %s: %d entries", mode, mod.name,
                  len(edits))
         if sink:
-            sink(45, "writing battle_models.modeldb")
+            sink(45, f"writing {mod.modeldb_path.name}")
         out = self._bmdb_apply(payload)
         out["entries"] = len(edits)
         if sink:

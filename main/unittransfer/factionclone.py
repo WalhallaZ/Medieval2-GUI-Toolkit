@@ -683,7 +683,8 @@ def review_mentions(mod, src: str) -> List[Dict]:
     return out
 
 
-def clone_file(data: Path, job: Job, src: str, new: str, label: str = "") -> FileEdit:
+def clone_file(data: Path, job: Job, src: str, new: str, label: str = "",
+               rel: str | None = None) -> FileEdit:
     """One job's cloner run over one file: the new text, or why there is none.
 
     Shared by the clone and by 21's repair (:mod:`unittransfer.factionaudit`),
@@ -691,9 +692,10 @@ def clone_file(data: Path, job: Job, src: str, new: str, label: str = "") -> Fil
     only this file's record. Never raises; an unreadable file comes back with
     ``skipped`` saying so.
     """
-    path = data / job.rel
+    rel = rel or job.rel
+    path = data / rel
     if not path.is_file():
-        return FileEdit(job.rel, job.label, note=job.note,
+        return FileEdit(rel, job.label, note=job.note,
                         skipped="this mod has no such file")
     try:
         original = kb.read_text(path, job.encoding)
@@ -731,9 +733,9 @@ def clone_file(data: Path, job: Job, src: str, new: str, label: str = "") -> Fil
         else:                                     # unreachable
             after, n = before, 0
     except (fr.RecordError, ValueError, OSError, UnicodeError) as e:
-        return FileEdit(job.rel, job.label, note=job.note,
+        return FileEdit(rel, job.label, note=job.note,
                         skipped=f"could not be read: {e}")
-    edit = FileEdit(job.rel, job.label, encoding=job.encoding, note=job.note,
+    edit = FileEdit(rel, job.label, encoding=job.encoding, note=job.note,
                     count=n)
     if n and after != before:
         edit.text = kb.to_newline(after, newline) if flat else after
@@ -761,15 +763,16 @@ def plan(mod, body: dict) -> ClonePlan:
     data = Path(mod.data)
 
     for job in JOBS:
-        edit = clone_file(data, job, src, new, label)
+        rel = mod.battle_models_rel if job.how == "modeldb" else job.rel
+        edit = clone_file(data, job, src, new, label, rel)
         p.edits.append(edit)
         if edit.skipped and job.required and not edit.count:
-            if not (data / job.rel).is_file():
-                p.errors.append(f"{getattr(mod, 'name', '?')} has no {job.rel}")
+            if not (data / rel).is_file():
+                p.errors.append(f"{getattr(mod, 'name', '?')} has no {rel}")
             elif edit.skipped.startswith("could not be read"):
-                p.errors.append(f"{job.rel}: {edit.skipped}")
+                p.errors.append(f"{rel}: {edit.skipped}")
         if edit.text:
-            p.changes.append(f"{job.label} ({Path(job.rel).name}) - {edit.count} "
+            p.changes.append(f"{job.label} ({Path(rel).name}) - {edit.count} "
                              + ("entry" if edit.count == 1 else "entries"))
 
     if want_art:

@@ -173,8 +173,9 @@ def _sniff(path: Path) -> str:
 
 
 def _entry(mod, k: Known) -> Dict:
-    path = mod.data / k.rel
-    row = {"rel": k.rel, "label": k.label, "modules": list(k.modules),
+    rel = mod.battle_models_rel if k.rel == "unit_models/battle_models.modeldb" else k.rel
+    path = mod.data / rel
+    row = {"rel": rel, "label": k.label, "modules": list(k.modules),
            "required": k.required, "folder": k.folder,
            "state": "missing", "size": 0, "encoding": "", "note": ""}
     try:

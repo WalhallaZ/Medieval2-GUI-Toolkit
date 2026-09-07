@@ -1526,7 +1526,7 @@ def apply_edit(plan: EditPlan) -> Dict:
         # they go in the manifest by absolute path (same shape as the EOP files)
         unitrefs.write_refs(plan.ref_texts, backup_root, manifest)
     if plan.modeldb_touched:
-        write_text("unit_models/battle_models.modeldb", _modeldb_text(plan),
+        write_text(mod.battle_models_rel, _modeldb_text(plan),
                    modeldb.ENCODING)
     for src, rel in plan.copies + plan.icon_copies:
         copy_file(src, rel)
