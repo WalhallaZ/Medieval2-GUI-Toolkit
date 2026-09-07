@@ -1604,6 +1604,7 @@ function wire(){
   logBtn.onclick=()=>openLog();
   selBtn.onclick=toggleSelMode; batchBtn.onclick=openBatch; clearSelBtn.onclick=clearSelection;
   packBtn.onclick=()=>packExport([...state.selected]); importPackBtn.onclick=packImport;
+  unusedUnitsBtn.onclick=openUnusedUnits;
   cleanBtn.onclick=()=>cleanupFor(state.mode)(); unusedOnly.onchange=render;
   ownBtn.onclick=()=>openOwnership('units'); allFacBtn.onclick=()=>openOwnership('all');
   sndBtn.onclick=sndApply;
@@ -1662,6 +1663,7 @@ function applyMode(persist){
   packBtn.style.display=(!one&&state.selMode&&state.selected.size)?'inline-block':'none';
   importPackBtn.style.display=one?'none':'inline-block';
   newUnitBtn.style.display=edit?'inline-block':'none';
+  unusedUnitsBtn.style.display=edit?'inline-block':'none';
   tidyEduBtn.style.display=edit?'inline-block':'none';
   const stm=state.mode==='stratmap', crd=state.mode==='cards',
         cmp=state.mode==='campmap';
