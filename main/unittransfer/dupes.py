@@ -411,7 +411,7 @@ def _text(mod: Mod, acts: Dict[int, DupeAction]) -> str:
 
 
 def path_for(mod: Mod) -> Path:
-    return mod.data / REL
+    return mod.modeldb_path
 
 
 def apply(p: DupePlan) -> Dict:
@@ -427,10 +427,11 @@ def apply(p: DupePlan) -> Dict:
     manifest: Dict[str, List[str]] = {"backed_up": [], "created": []}
 
     target = path_for(mod)
-    bpath = backup_root / "data" / REL
+    rel = mod.battle_models_rel
+    bpath = backup_root / "data" / rel
     bpath.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(target, bpath)
-    manifest["backed_up"].append(REL)
+    manifest["backed_up"].append(rel)
     file_op("BACKUP", target, f"-> {bpath}")
 
     target.write_text(p.text, encoding=modeldb.ENCODING)

@@ -30,6 +30,21 @@ ENCODING = "latin-1"
 ARCHIVE_MAGIC = "serialization::archive"
 
 
+def _is_dmb(raw: str) -> bool:
+    """Whether one raw entry is the descriptor's line-oriented form."""
+    return raw.lstrip().lower().startswith("type")
+
+
+def _is_dmb_document(text: str) -> bool:
+    """Recognise a descriptor even when its author used a custom preamble."""
+    for line in text.splitlines():
+        stripped = line.strip().lower()
+        if not stripped or stripped.startswith(";"):
+            continue
+        return stripped.startswith("type") and len(stripped) > 4 and stripped[4].isspace()
+    return False
+
+
 @dataclass
 class Animation:
     mount_type: str            # horse | none | elephant | camel
@@ -287,6 +302,9 @@ class ModelDb:
     body_start: int = 0                  # offset in source where the body begins
     trailing: str = ""                   # bytes after the last entry (usually "\n")
     header_raw: str = ""                 # verbatim original header (incl trailing whitespace)
+    # ``dmb`` is the modern, line-oriented data/descr_model_battle.txt.
+    # Keeping its entries in this established shape lets all consumers share it.
+    format: str = "modeldb"
 
     def by_name(self) -> Dict[str, ModelEntry]:
         return {e.name: e for e in self.entries}
@@ -302,6 +320,8 @@ class ModelDb:
         return out
 
     def to_text(self) -> str:
+        if self.format == "dmb":
+            return self.header_raw + "".join(e.raw for e in self.entries) + self.trailing
         # +1 for the blank sentinel entry, but only if the source file had one
         # -- some mods (e.g. those lacking the vanilla "blank" padding entry)
         # count every entry as real.
@@ -463,6 +483,9 @@ def _desync_message(text: str, r: "_Reader", e: "_Desync", n: int) -> str:
 
 
 def parse_text(text: str) -> ModelDb:
+    if _is_dmb_document(text):
+        from . import dmb
+        return dmb.parse_text(text)
     r = _Reader(text)
     for mark in kb.BOMS:
         if text.startswith(mark):
@@ -525,7 +548,11 @@ def parse_text(text: str) -> ModelDb:
 
 
 def parse_file(path: str | Path) -> ModelDb:
-    return parse_text(Path(path).read_text(encoding=ENCODING))
+    text = Path(path).read_text(encoding=ENCODING)
+    if _is_dmb_document(text):
+        from . import dmb
+        return dmb.parse_text(text)
+    return parse_text(text)
 
 
 import re as _re
@@ -560,6 +587,9 @@ def entry_path_spans(raw: str, pad: bool = False) -> List[Tuple[int, int, str, s
     ``first_entry_pad`` set (see ``_read_entry``) - otherwise this walk
     desyncs on the extra reserved ints and misidentifies path spans.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.entry_path_spans(raw, pad)
     r = _SpanReader(raw)
     out: List[Tuple[int, int, str, str]] = []
 
@@ -617,6 +647,9 @@ def rewrite_entry_paths(raw: str, path_map: Dict[str, str], pad: bool = False) -
     byte (floats, counts, whitespace) is preserved verbatim, which keeps entries
     that we did not reroute byte-identical. ``pad`` - see ``entry_path_spans``.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.rewrite_entry_paths(raw, path_map, pad)
     if not path_map:
         return raw
     spans = entry_path_spans(raw, pad=pad)
@@ -643,6 +676,9 @@ def rewrite_paths_indexed(raw: str, index_map: Dict[int, str],
     different files. Each replacement re-emits its own ``<len> <chars>`` prefix;
     every other byte is preserved. ``pad`` - see :func:`entry_path_spans`.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.rewrite_paths_indexed(raw, index_map, pad)
     index_map = {int(k): v for k, v in (index_map or {}).items() if v is not None}
     if not index_map:
         return raw
@@ -726,6 +762,16 @@ def rewrite_animations(raw: str, anims: List["Animation"],
     lower-cased, so writing one back would otherwise never be a no-op).
     ``pad`` - see :func:`entry_path_spans`.
     """
+    if _is_dmb(raw):
+        # The descriptor carries one skeleton line per animation.  Re-render
+        # just those lines; attachment skeletons remain the entry's own.
+        import re
+        rows = iter(anims)
+        def repl(m):
+            a = next(rows, anims[-1])
+            key = m.group(1)
+            return f"{m.group(2)}{key}{m.group(3)}{a.primary_skeleton}, {a.secondary_skeleton}{m.group(4)}"
+        return re.sub(r"(?mi)^(\s*)(skeleton(?:_(?:horse|camel|elephant))?)(\s+).*?(\r?\n|$)", repl, raw)
     if not anims:
         return raw
     spans = animation_spans(raw, pad=pad)
@@ -771,6 +817,9 @@ def path_slots_raw(raw: str, pad: bool = False) -> List[dict]:
     each stage has to re-derive the slots from the text it is about to edit
     rather than from the originally parsed :class:`ModelEntry`.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.path_slots_raw(raw, pad)
     spans = entry_path_spans(raw, pad=pad)
     groups = _texture_group_spans(raw, pad=pad)
     records = [("main" if gi == 0 else "attach", rec["fac"])
@@ -865,6 +914,9 @@ def add_texture_factions(raw: str, factions, prefer: Optional[str] = None,
     this is what makes a transfer valid after a base unit changes ownership.
     ``pad`` - see ``entry_path_spans``.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.add_texture_factions(raw, factions, prefer, pad)
     wanted = [f for f in dict.fromkeys(factions) if f]
     if not wanted:
         return raw
@@ -910,6 +962,9 @@ def set_texture_factions(raw: str, factions, prefer: Optional[str] = None,
     a texture group with zero records is not a model the game can draw.
     ``pad`` - see :func:`entry_path_spans`.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.set_texture_factions(raw, factions, prefer, pad)
     wanted = [f for f in dict.fromkeys((f or "").strip().lower() for f in factions) if f]
     if not wanted:
         return raw
@@ -955,6 +1010,9 @@ def parse_entry_text(raw: str, pad: bool = False) -> ModelEntry:
     text with a stray extra record would read as one entry and silently drop the
     rest on the next save.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.parse_entry_text(raw)
     r = _Reader(raw)
     entry = _read_entry(r, pad=pad)
     entry.raw = raw
@@ -986,6 +1044,9 @@ def entry_spans(raw: str, pad: bool = False) -> Dict[str, List[List[int]]]:
     Derived from the very span walkers the rewriters use, so a label can never
     point at a line the editor would not have edited.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.entry_spans(raw)
     spans: Dict[str, List[List[int]]] = {}
 
     def put(label: str, start: int, end: int) -> None:
@@ -1091,6 +1152,9 @@ def rename_entry_raw(raw: str, new_name: str) -> str:
     replaced by ``new_name``. The name is the first length-prefixed string in
     the entry body; everything after it is preserved verbatim.
     """
+    if _is_dmb(raw):
+        from . import dmb
+        return dmb.rename_entry_raw(raw, new_name)
     lead_len = len(raw) - len(raw.lstrip())
     lead, rest = raw[:lead_len], raw[lead_len:]
     m = _NAME_PREFIX_RE.match(rest)

@@ -272,7 +272,7 @@ def write_pack(plan: PackPlan, dest_zip: Path) -> dict:
              mod.edu.preamble + "".join(u.raw for u in plan.units), edu_mod.ENCODING)
         text("data/text/export_units.txt", _loc_text(mod, plan.units),
              localization.ENCODING)
-        text("data/unit_models/battle_models.modeldb",
+        text("data/" + mod.battle_models_rel,
              bmdb.export_modeldb_text(mod, plan.models), modeldb_mod.ENCODING)
 
         # descr_* blocks, verbatim and only the ones these units name. Each file
