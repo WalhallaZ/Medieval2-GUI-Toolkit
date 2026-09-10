@@ -798,10 +798,11 @@ def paint(sess: PaintSession, body: dict) -> dict:
     if marker:
         _check_marker(cm, sess, body, tiles)
 
-    # Markers are protected on every stroke that is not itself placing one: a
-    # brush that ran over a settlement pixel would delete a city, and a bucket
-    # that flooded a sea would delete every port on its coast.
-    guard = not body.get("marker")
+    # Markers are protected on every ordinary stroke unless the user has
+    # explicitly armed the destructive override: a brush that ran over a
+    # settlement pixel would otherwise delete a city, and a bucket that flooded
+    # a sea would delete every port on its coast.
+    guard = not body.get("marker") and not body.get("overwrite_markers")
     reg = cm.tiles("regions").tobytes() if guard else b""
     protected = 0
 

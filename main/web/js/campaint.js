@@ -62,7 +62,7 @@ function cpaintNew(mod){
   return {
     mod, on: false, tool: 'brush', size: 3, shape: 'round',
     target: 'regions', region: '', sea: false, rgb: null,
-    marker: '', pal: null, palErr: '', busy: false, err: '', note: '',
+    marker: '', overwriteMarkers: false, pal: null, palErr: '', busy: false, err: '', note: '',
     filter: '', wiz: null, wizOpen: false, prog: null,
     st: {dirty: [], files: [], undo: 0, redo: 0, dropped: 0, last: '',
          next: '', new_region: null},
@@ -265,7 +265,8 @@ async function cpaintUp(){
   p.painting = false; p.samples = [];
   if(!points.length){ cmapPaint(); return; }
   const body = {tool: p.tool === 'pencil' ? 'pencil' : p.tool,
-                target: p.target, size: p.size, shape: p.shape, points};
+    target: p.target, size: p.size, shape: p.shape, points};
+  if(p.overwriteMarkers && !p.marker) body.overwrite_markers = true;
   if(p.marker){ body.tool = 'pencil'; body.marker = p.marker; body.target = 'regions'; }
   if(p.target === 'regions' || p.tool === 'water' || p.marker){
     body.region = p.region; body.sea = p.sea && !p.marker;
@@ -612,6 +613,11 @@ function cpaintToolsHtml(){
       >${glyph}<span>${esc(label)}</span></button>`).join('');
   const sized = CPAINT_SIZED.indexOf(p.tool) >= 0 && !p.marker;
   return `<div class="cptools">${rows}</div>
+    ${!p.marker ? `<div class="cprow"><label class="cptg">
+      <input type="checkbox" data-overwrite-markers${p.overwriteMarkers ? ' checked' : ''}>
+      Overwrite settlement and port pixels
+      <span class="count">normally protected</span>
+    </label></div>` : ''}
     ${sized ? `<div class="cprow">
       <label class="cpsz">Size
         <input type="range" min="1" max="${p.pal.brush_max}" step="2"
@@ -904,6 +910,10 @@ function cpaintWire(){
   box.querySelectorAll('[data-shape]').forEach(b => b.onclick = () => {
     p.shape = b.dataset.shape; cpaintPaint();
   });
+  const overwrite = box.querySelector('[data-overwrite-markers]');
+  if(overwrite) overwrite.onchange = () => {
+    p.overwriteMarkers = overwrite.checked; cpaintPaint();
+  };
   const tg = box.querySelector('[data-target]');
   if(tg) tg.onchange = () => {
     p.target = tg.value; p.marker = ''; p.rgb = null; cpaintPaint();
