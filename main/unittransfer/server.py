@@ -44,6 +44,7 @@ Unit packs (see :mod:`unittransfer.pack`)
   POST /api/pack/unmount         -> drop it again and delete what was unpacked
   GET  /api/units?mod=NAME       -> {mod, factions, categories, classes, units}
   GET  /api/units/unused?mod=&sounds=1 -> full-mod text-reference audit
+  GET  /api/units/unrecruitable?mod= -> EDU types absent from all recruit pools
   POST /api/units/delete_unused  -> delete unused units, re-scanning between passes
   POST /api/units/delete         -> delete selected units through the edit planner
   GET  /icon?mod=&type=&kind=    -> image/png
@@ -685,7 +686,7 @@ from . import (bmdb, buildings, cards, cleaner, codeview, config, dupes, edit,
                modflags, modfiles, sounds, stratmap)
 from . import mapgen, mapnew, mapresize
 from . import ancillaries, areaeffects, campimport, edbimport, osmmap, settlemodel, heroabilities, hordestart, walls, characters, projectzip, campaint, campdb, campevents, campfiles, campmap, campnew, campstrat, cas, casanim, animedit, modelexport, launchcheck, settlemech, fileswap, factionsites, sidefiles, banners, changesets, health, climatenew, guilds, mapcheck, mapfe, mapquery, mapterrain, mercpools, regiondel, edusort, factionaudit, factionclone, factions, images, mesh, minorfiles, namekeys, portrecords, rawtext, rebelpools, renames, soundbanks, soundscripts, spawns, sprites, stratcamp, stratchar, stratedit, stratobj, strings, traits, triggers, winconds
-from . import unusedunits
+from . import unrecruitable, unusedunits
 from . import eop as _eop
 from . import logutil
 from .logutil import log, setup as setup_logging
@@ -1867,6 +1868,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.registry.get(name),
                     (q.get("sounds") or ["1"])[0] != "0", _progress_sink(job),
                     lambda: _progress_cancelled(job)))
+            if u.path == "/api/units/unrecruitable":
+                name = (q.get("mod") or [None])[0]
+                if not name or name not in self.registry.names():
+                    return self._err(404, "unknown mod")
+                return self._json(unrecruitable.scan(self.registry.get(name)))
             if u.path == "/api/unit_models":
                 # Every battle-model entry this unit is affiliated with, and the
                 # folder each one's files live in - what the composer's
