@@ -49,7 +49,7 @@ const CS_DEBOUNCE = 450;
 function csNew(mod, region){
   return {mod, region, open: true, loading: false, err: '', d: null,
           w: null, blds: [], owner: '', place: '', busy: false,
-          preview: null, timer: 0};
+          preview: null, timer: 0, multi: null, touched: new Set()};
 }
 
 //: Called from the map's own pick, so opening a province opens its settlement.
@@ -59,7 +59,10 @@ async function csOpen(region, refresh){
   if(!c) return;
   const was = state.cset;
   if(!region){ state.cset = null; csPaint(); return; }
-  if(!refresh && was && was.mod === c.mod && was.region === region && was.d) return;
+  if(!refresh && was && was.mod === c.mod && was.region === region && was.d){
+    csMultiLoad(was);
+    return;
+  }
   const k = state.cset = csNew(c.mod, region);
   k.open = was ? was.open : true;
   k.loading = true;
@@ -72,6 +75,29 @@ async function csOpen(region, refresh){
   k.loading = false;
   if(d.error){ k.err = d.error; csPaint(); return; }
   csAdopt(k, d);
+  csPaint();
+  csMultiLoad(k);
+}
+
+// Settlement blocks are independent records in the same campaign file.  Keep
+// the last clicked one as the editable model and show a warning for every
+// editable value that is not common to the selected provinces.
+async function csMultiLoad(k){
+  const c = state.cmap;
+  const regions = c && c.multi ? [...c.multi].map(key => c.byKey.get(key))
+    .filter(Boolean).map(r => r.name).filter(Boolean) : [];
+  if(regions.length < 2){ k.multi = null; return; }
+  let rows;
+  try{ rows = await Promise.all(regions.map(region => api.get(`/api/map/settlement?mod=${enc(k.mod)}`
+    + `&region=${enc(region)}${cmapCampQ()}`).then(d => ({region, d}),
+      () => ({region, d: null})))); }
+  catch(e){ return; }
+  if(state.cset !== k) return;
+  const valid = rows.filter(row => row.d && !row.d.error);
+  const slots = ['settlement_type', 'level', 'population', 'year_founded',
+                 'plan_set', 'faction_creator', 'buildings', 'owner'];
+  const differs = slots.filter(slot => new Set(valid.map(row => JSON.stringify(row.d[slot]))).size > 1);
+  k.multi = {regions: valid.map(row => row.region), missing: rows.length - valid.length, differs};
   csPaint();
 }
 
@@ -88,6 +114,7 @@ function csAdopt(k, d){
   k.owner = d.owner;
   k.place = '';
   k.preview = null;
+  k.touched.clear();
 }
 
 function csToggle(){
@@ -103,6 +130,7 @@ function csSet(slot, value){
   const k = state.cset;
   if(!k || !k.w) return;
   k.w[slot] = value;
+  k.touched.add(slot);
   // The tier beside Kind/Level changes with those controls. Text inputs do not:
   // rebuilding their parent on every keypress removes the input and its focus.
   csPlanSoon();
@@ -113,6 +141,7 @@ function csBld(i, slot, value){
   const k = state.cset;
   if(!k || !k.blds[i]) return;
   k.blds[i][slot] = value;
+  k.touched.add('buildings');
   if(slot === 'line'){
     // a line without one of its own levels is not a building the engine can
     // find, so picking a line picks its first level with it
@@ -127,6 +156,7 @@ function csBldDrop(i){
   const k = state.cset;
   if(!k) return;
   k.blds.splice(i, 1);
+  k.touched.add('buildings');
   csPlanSoon();
   csPaint();
 }
@@ -138,6 +168,7 @@ function csBldMove(i, by){
   const row = k.blds[i];
   k.blds[i] = k.blds[j];
   k.blds[j] = row;
+  k.touched.add('buildings');
   csPlanSoon();
   csPaint();
 }
@@ -148,6 +179,7 @@ function csBldAdd(name){
   const line = (k.d.vocab.lines || []).find(L => L.name === name);
   k.blds.push({line: name,
                level: line && line.levels.length ? line.levels[0].level : ''});
+  k.touched.add('buildings');
   csPlanSoon();
   csPaint();
 }
@@ -156,6 +188,7 @@ function csOwner(value){
   const k = state.cset;
   if(!k) return;
   k.owner = value;
+  k.touched.add('owner');
   // a province given to somebody else has to land somewhere in their block,
   // and the file's own habit is at the end
   if(value !== k.d.owner && !k.place) k.place = 'last';
@@ -168,6 +201,7 @@ function csPlace(value){
   const k = state.cset;
   if(!k) return;
   k.place = value;
+  k.touched.add('owner');
   csPlanSoon();
   csPaint();
 }
@@ -178,16 +212,18 @@ function csPlace(value){
 //: about what is being asked for.
 function csBody(){
   const k = state.cset;
-  const body = {mod: k.mod, region: k.region, campaign: k.d.campaign,
-                edits: {settlement_type: k.w.settlement_type,
-                        level: (k.w.level || '').trim(),
-                        population: String(k.w.population).trim(),
-                        year_founded: String(k.w.year_founded).trim(),
-                        plan_set: (k.w.plan_set || '').trim(),
-                        faction_creator: (k.w.faction_creator || '').trim()},
-                buildings: k.blds.map(b => ({line: b.line, level: b.level}))};
-  if(k.owner && k.owner !== k.d.owner) body.owner = k.owner;
-  if(k.place) body.place = k.place;
+  const bulk = k.multi && k.multi.regions.length > 1;
+  const edits = {};
+  for(const slot of ['settlement_type', 'level', 'population', 'year_founded',
+                     'plan_set', 'faction_creator']){
+    if(!bulk || k.touched.has(slot)) edits[slot] = slot === 'population' || slot === 'year_founded'
+      ? String(k.w[slot]).trim() : (k.w[slot] || '').trim();
+  }
+  const body = {mod: k.mod, region: k.region, campaign: k.d.campaign, edits};
+  if(!bulk || k.touched.has('buildings'))
+    body.buildings = k.blds.map(b => ({line: b.line, level: b.level}));
+  if((!bulk || k.touched.has('owner')) && k.owner && k.owner !== k.d.owner) body.owner = k.owner;
+  if((!bulk || k.touched.has('owner')) && k.place) body.place = k.place;
   return body;
 }
 
@@ -213,32 +249,42 @@ async function csSave(){
   if(!k || !k.d || k.busy) return;
   clearTimeout(k.timer);
   k.busy = true;
-  let plan;
-  try{ plan = await api.post('/api/map/settlement_plan', csBody()); }
+  const regions = k.multi && k.multi.regions.length > 1 ? k.multi.regions : [k.region];
+  const bodies = regions.map(region => Object.assign({}, csBody(), {region}));
+  let plans, plan;
+  try{ plans = await Promise.all(bodies.map(body => api.post('/api/map/settlement_plan', body))); }
   catch(e){ plan = {error: errText(e)}; }
   finally{ k.busy = false; }
-  if(plan.error){ toast('✗ ' + plan.error, 8000); k.preview = plan.plan || null;
+  const ready = plans && plans.filter(plan => !plan.error);
+  const failed = plans && plans.find(plan => plan.error && plan.error !== 'nothing to change');
+  if(!plans || failed){ const plan = failed || {error: 'could not plan settlement save'};
+    toast('✗ ' + plan.error, 8000); k.preview = plan.plan || null;
     csPaint(); return; }
-  const p = plan.plan || {};
+  if(!ready.length){ toast('Nothing to change.'); return; }
+  const p = ready[0].plan || {};
   k.preview = p;
   csPaint();
   const lines = (p.changes || []).slice(0, 14);
   const notes = (p.capitals || []).concat((p.warnings || []).slice(0, 4))
     .map(x => '⚠ ' + x);
-  if(!confirm(`Write: save the settlement in ${k.region}?\n\n`
+  if(!confirm(`Write: save ${regions.length} settlement${regions.length === 1 ? '' : 's'}?\n\n`
     + (lines.join('\n') || 'no visible change')
     + ((p.changes || []).length > 14
        ? `\n…and ${p.changes.length - 14} more` : '')
     + (notes.length ? '\n\n' + notes.join('\n') : '')
     + '\n\nOnly this block moves. Backed up first, and 🕑 Log can undo it.')) return;
   k.busy = true;
-  let res;
-  try{ res = await api.post('/api/map/settlement_apply', csBody()); }
+  let results, res;
+  try{ results = [];
+    for(let i = 0; i < bodies.length; i++) if(!plans[i].error)
+      results.push(await api.post('/api/map/settlement_apply', bodies[i]));
+  }
   catch(e){ res = {error: errText(e)}; }
   finally{ k.busy = false; }
-  if(res.error){ toast('✗ ' + res.error, 8000); return; }
-  toast('Saved. 🕑 Log can undo it.');
-  activity('settlement', `${k.mod} ${k.region} saved`);
+  const failedApply = results && results.find(res => res.error);
+  if(!results || failedApply){ toast('✗ ' + (failedApply || res).error, 8000); return; }
+  toast(`Saved ${regions.length} settlement${regions.length === 1 ? '' : 's'}. 🕑 Log can undo it.`);
+  activity('settlement', `${k.mod} ${regions.length} settlement(s) saved`);
   // The map canvas, layer choices and open tabs do not depend on this one
   // settlement block. Re-read that block only; loading the whole map destroys
   // the workspace the user is still using.
@@ -394,7 +440,14 @@ function csFormHtml(){
     ? (v.castle_tier || {})[w.level] || '' : '';
   const list = (slot, values) => `<datalist id="csl-${slot}">${
     (values || []).map(x => `<option value="${esc(x)}">`).join('')}</datalist>`;
-  return `<div class="cmform">
+  const multi = k.multi && k.multi.regions.length > 1;
+  const note = multi ? `<div class="w-warn">⚠ ${k.multi.regions.length} settlements selected${
+    k.multi.missing ? ` (${k.multi.missing} selected region${k.multi.missing === 1 ? ' has' : 's have'} no settlement)` : ''}.${
+      k.multi.differs.length ? ' Values differ for ' + esc(k.multi.differs.join(', '))
+        + '; editing a field will apply its current value to every selected settlement.'
+        : ' Edits apply to every selected settlement.'}</div>` : '';
+  return note + `<div class="cmform">
+    <div class="csrow2"><div class="cmfield"><label>Province <span class="cmlock">locked</span></label><input value="${esc(multi ? 'multiple regions' : d.region)}" disabled></div><div class="cmfield"><label>Settlement <span class="cmlock">locked</span></label><input value="${esc(multi ? 'multiple settlements' : (d.shown_settlement || d.settlement || d.region))}" disabled></div></div>
     <div class="csrow2">
       <div class="cmfield"><label>Kind</label>
         <select onchange="csSet('settlement_type', this.value)">

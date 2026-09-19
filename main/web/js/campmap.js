@@ -877,7 +877,8 @@ function cmapNew(mod, man){
     // who turned them off saved that, and it is a habit like the rest.
     labels: saved.labels === undefined ? true : !!saved.labels, lab: null,
     view: {zoom: 1, ox: 0, oy: 0, fitted: false},
-    hover: null, sel: null, outline: null, outlineKey: -1,
+    hover: null, sel: null, multi: new Set(), multiDetails: null,
+    outline: null, outlineKey: -1,
     // 17e's tooltip: where the pointer is in the stage, whether the panel is
     // wanted at all, and whether a drag is holding it down
     ptr: null, tip: saved.tip !== false, tipHold: false, saidTip: '', tipKey: '',
@@ -2490,7 +2491,7 @@ function cmapPointers(cv){
         if(state.cmk) state.cmk.drag = null;
         cmapPaint();
         const tile = cmapEventTile(cv, e);
-        if(!cmapObjectPick(tile)) cmapPick(tile);
+        if(!cmapObjectPick(tile)) cmapPick(tile, e.shiftKey);
       }else cmkDrop();
     }
     else if(last && moved < CMAP_DRAG_SLOP && state.cmap){
@@ -2498,7 +2499,7 @@ function cmapPointers(cv){
       // press that travelled is still a pan while the pin waits.
       const tile = cmapEventTile(cv, e);
       if(!(e.button === 0 && typeof cpinTake === 'function' && cpinTake(tile))){
-        if(e.button !== 0 || !cmapObjectPick(tile)) cmapPick(tile);
+        if(e.button !== 0 || !cmapObjectPick(tile)) cmapPick(tile, e.shiftKey);
         if(e.button === 2) cpaintPickRegion(state.cmap.sel);
       }
     }
@@ -2985,8 +2986,12 @@ function cmapRegionAt(tx, ty){
    forth between two provinces should not pay for it twice. */
 function cmapOutline(r){
   const c = state.cmap;
-  if(!r){ c.outline = null; c.outlineKey = -1; return; }
-  if(c.outlineKey === r.key) return;
+  if(!r || (c.multi && !c.multi.size)){ c.outline = null; c.outlineKey = -1; return; }
+  // Shift-click can keep several provinces selected.  One combined outline is
+  // cheaper than a canvas per province and makes the batch target unambiguous.
+  const wants = c.multi && c.multi.size ? [...c.multi].sort((a,b) => a - b) : [r.key];
+  const outlineKey = wants.join(',');
+  if(c.outlineKey === outlineKey) return;
   const W = c.man.width, H = c.man.height;
   const R = cmapRawOf(c.layers.regions);
   if(!R){ c.outline = null; return; }
@@ -2995,7 +3000,7 @@ function cmapOutline(r){
   out.width = W; out.height = H;
   const im = out.getContext('2d').createImageData(W, H);
   const dst = im.data;
-  const want = r.key;
+  const want = new Set(wants);
   // one packed key per pixel, once, so the neighbour tests below are integer
   // comparisons rather than four more shifts each
   const keys = new Int32Array(W * H);
@@ -3004,20 +3009,20 @@ function cmapOutline(r){
   for(let y = 0; y < H; y++){
     for(let xx = 0; xx < W; xx++){
       const j = y * W + xx;
-      if(keys[j] !== want) continue;
+      if(!want.has(keys[j])) continue;
       // The map's own edge counts as an edge of the region: a province running
       // off the side of the map is outlined there too, rather than opening.
-      const edge = xx === 0     || keys[j - 1] !== want
-                || xx === W - 1 || keys[j + 1] !== want
-                || y === 0      || keys[j - W] !== want
-                || y === H - 1  || keys[j + W] !== want;
+      const edge = xx === 0     || !want.has(keys[j - 1])
+                || xx === W - 1 || !want.has(keys[j + 1])
+                || y === 0      || !want.has(keys[j - W])
+                || y === H - 1  || !want.has(keys[j + W]);
       if(!edge) continue;
       const i = j * 4;
       dst[i] = 255; dst[i + 1] = 232; dst[i + 2] = 100; dst[i + 3] = 255;
     }
   }
   out.getContext('2d').putImageData(im, 0, 0);
-  c.outline = out; c.outlineKey = r.key;
+  c.outline = out; c.outlineKey = outlineKey;
 }
 
 /* ---------- the legend ---------- */
@@ -3310,7 +3315,7 @@ function cmapHideColour(code, key, on){
    it - answered in the browser off the region layer it already has - because
    that one runs per pointer event and a round trip there would be the exact
    thing this phase's rules exist to prevent. */
-async function cmapPick(tile){
+async function cmapPick(tile, multi){
   const c = state.cmap;
   c.objectRequest = (c.objectRequest || 0) + 1;
   c.objectSel = null;
@@ -3336,6 +3341,12 @@ async function cmapPick(tile){
     const own = cmapMarkerOwner(tx, ty);
     if(own){ r = own.region; c.marker = own.kind; }
     else c.marker = `${hit}-orphan`;
+  }
+  if(multi && r && r.name){
+    if(c.multi.has(r.key)) c.multi.delete(r.key); else c.multi.add(r.key);
+  }else{
+    c.multi.clear();
+    if(r && r.name) c.multi.add(r.key);
   }
   c.sel = r;
   c.pick = (tx >= 0 && ty >= 0 && tx < c.man.width && ty < c.man.height) ? [tx, ty] : null;
@@ -3405,7 +3416,10 @@ async function cmapOpenPeople(region){
    flag somebody has to remember to set. */
 async function cmapOpenRegion(name, refresh){
   const c = state.cmap;
-  if(!refresh && c.det && c.det.name === name && !c.det.error) return;
+  if(!refresh && c.det && c.det.name === name && !c.det.error){
+    cmapMultiRegionLoad(c, c.det);
+    return;
+  }
   c.det = {name, loading: true};
   c.cv = null;
   cmapPickPaint();
@@ -3418,10 +3432,29 @@ async function cmapOpenRegion(name, refresh){
     w: {legion: d.legion, faction: d.faction, rebels: d.rebels,
         resources: d.resources.slice(), triumph: d.triumph, farming: d.farming,
         religions: Object.assign({}, d.religions)},
-    raw: '',
+    raw: '', touched: new Set(),
   });
   cmapPickPaint();
   undoReset();          // the working copy exists now: this is Ctrl+Z's baseline
+  cmapMultiRegionLoad(c, c.det);
+}
+
+// The visible form stays a normal, editable record.  In a batch its initial
+// values come from the last province clicked; this small warning says exactly
+// when that value is not shared by every selected province.
+async function cmapMultiRegionLoad(c, d){
+  const names = [...c.multi].map(key => c.byKey.get(key)).filter(Boolean)
+    .map(r => r.name).filter(Boolean);
+  if(names.length < 2){ d.multi = null; return; }
+  let rows;
+  try{ rows = await Promise.all(names.map(name => api.get(`/api/map/region?mod=${enc(c.mod)}`
+    + `&name=${enc(name)}${cmapCampQ()}`))); }
+  catch(e){ return; }
+  if(state.cmap !== c || c.det !== d) return;
+  const slots = ['legion', 'faction', 'rebels', 'resources', 'triumph', 'farming', 'religions'];
+  const differs = slots.filter(slot => new Set(rows.map(row => JSON.stringify(row[slot]))).size > 1);
+  d.multi = {names, differs};
+  cmapPickPaint();
 }
 
 //: Everything below the layer stack: what the tile is, and what the region is.
@@ -3518,13 +3551,14 @@ function cmapRegionHtml(){
     <div class="count">reading ${esc(d.name)}…</div>`;
   if(d.error) return `<div class="k">This region</div>
     <div class="w-bad">${esc(d.error)}</div>`;
+  const selected = c.multi ? c.multi.size : 0;
   return `<div class="cmbar2">
       <div><b>${esc(d.shown || d.name)}</b>
-        <span class="count">${esc(d.file)}, lines ${d.lines[0]}-${d.lines[1]}</span></div>
+        <span class="count">${esc(d.file)}, lines ${d.lines[0]}-${d.lines[1]} · ${selected} selected${selected === 1 ? ' · Shift-click to add or remove regions' : ''}</span></div>
       <span class="sp"></span>
-      <button class="${d.cv ? 'on' : ''}" onclick="cmapCvToggle()"
+      ${!(d.multi && d.multi.names.length > 1) ? `<button class="${d.cv ? 'on' : ''}" onclick="cmapCvToggle()"
         title="Show this region exactly as descr_regions.txt stores it, beside the form."
-        >&lt;/&gt; Code view</button>
+        >&lt;/&gt; Code view</button>` : ''}
       <button class="danger" onclick="rdlOpen()"
         title="Delete this province and give its land to a neighbour. Nothing is written until the whole list of files is in front of you."
         >Delete</button>
@@ -3575,13 +3609,14 @@ function cmapRename(subject){
 
 function cmapFormHtml(){
   const d = state.cmap.det, w = d.w, v = d.vocab;
+  const multi = d.multi && d.multi.names.length > 1;
   //: `rename` is the subject the rename dialog opens on, for the two fields a
   //: rename can follow. The colour is not one of them: it is pixels, not a name.
   const lock = (label, value, why, extra, rename) => `<div class="cmfield">
     <label>${esc(label)} <span class="cmlock" title="${esc(why)}">locked</span>
-      ${rename ? `<button class="cmrename" title="${esc(why)}"
+      ${rename && !multi ? `<button class="cmrename" title="${esc(why)}"
         onclick="cmapRename('${esc(rename)}')">Rename…</button>` : ''}</label>
-    <input value="${esc(value)}" readonly>
+    <input value="${esc(value)}" disabled>
     ${extra ? `<div class="count">${extra}</div>` : ''}</div>`;
   const pick = (label, slot, list, labels) => `<div class="cmfield">
     <label>${esc(label)}</label>
@@ -3592,7 +3627,11 @@ function cmapFormHtml(){
     </datalist></div>`;
   const total = cmapReligionTotal();
   const px = d.pixels;
-  return cmapFindingsHtml2() + `
+  const multiNote = multi ? `<div class="w-warn">⚠ ${d.multi.names.length} regions selected.${
+    d.multi.differs.length ? ' Values differ for ' + esc(d.multi.differs.join(', '))
+      + '; editing a field will apply its current value to every selected region.'
+      : ' Edits apply to every selected region.'}</div>` : '';
+  return cmapFindingsHtml2() + multiNote + `
     <div class="cmform">
       ${lock('Region name', d.name, CMAP_LOCKED.name,
              d.shown ? `shown in game as <b>${esc(d.shown)}</b>`
@@ -3657,8 +3696,12 @@ function cmapNamesHtml(){
   if(!n.have) return `<div class="k">Names the player reads
     <span class="count">${esc(n.problem || 'no names file')}</span></div>`;
   const pick = d.namePick || {};
+  const multi = d.multi && d.multi.names.length > 1;
   const rows = (n.rows || []).map(r => {
     const now = pick[r.slot] === undefined ? r.value : pick[r.slot];
+    // These two keys identify the individual record, so a batch cannot turn
+    // several provinces or settlements into one name. Legion remains editable.
+    const locked = multi && (r.slot === 'region' || r.slot === 'settlement');
     /* 33, G4. The legion is the third key and the only one that need not name
        this province: DaC writes the line on 199 of its 200 records and only 80
        of those point at the record's own name, the rest at another province's
@@ -3669,7 +3712,7 @@ function cmapNamesHtml(){
       <label>${CMAP_NAME_ROWS[r.slot] || r.slot}
         <span class="count">{${esc(r.key)}}${
           r.slot === 'legion' && !mine ? ' - another record’s key' : ''}</span></label>
-      <input value="${esc(now)}" placeholder="${esc(r.key)}"
+      <input value="${esc(now)}" placeholder="${esc(r.key)}"${locked ? ' disabled' : ''}
         oninput="cmapNameSet('${esc(r.slot)}', this.value)">
       ${r.set ? '' : '<div class="w-warn">no line in this file yet</div>'}</div>`;
   }).join('');
@@ -3684,7 +3727,7 @@ function cmapNamesHtml(){
           + 'save and a third undo. The compiled .strings.bin beside it is '
           + 'rebuilt, because that is the one the game reads.'
         : 'Blank here and the campaign map shows the code name instead.'}</div>
-      ${dirty ? `<button class="primary" style="margin-top:6px"
+      ${dirty && !multi ? `<button class="primary" style="margin-top:6px"
         onclick="cmapNamesSave()">Save names</button>` : ''}
     </div>`;
 }
@@ -4014,11 +4057,13 @@ function cmapGoRegion(key){
 function cmapSet(slot, value){
   const d = state.cmap.det; if(!d || !d.w) return;
   d.w[slot] = value;
+  d.touched.add(slot);
   cmapTouched(false);
 }
 function cmapSetResources(text){
   const d = state.cmap.det; if(!d || !d.w) return;
   d.w.resources = text.split(',').map(v => v.trim()).filter(Boolean);
+  d.touched.add('resources');
   // the chips under the box are the point of it, so this one does repaint -
   // and it repaints the FORM, not the pane, because the caret is in the box
   cmapTouched(true);
@@ -4028,6 +4073,7 @@ function cmapSetReligion(name, value){
   const v = value.trim();
   if(v === '') delete d.w.religions[name];
   else d.w.religions[name] = parseInt(v, 10) || 0;
+  d.touched.add('religions');
   cmapTouched(true);
 }
 function cmapTouched(repaint){
@@ -4078,7 +4124,16 @@ async function cmapCvToggle(){
    `edits` is exactly what campmap.render_block takes, so the pane and the save
    cannot produce different bytes. */
 function cmapEdits(){
-  const w = state.cmap.det.w;
+  const d = state.cmap.det, w = d.w;
+  if(d.multi && d.multi.names.length > 1){
+    const out = {};
+    for(const slot of d.touched){
+      if(slot === 'religions') out.religions = Object.assign({}, w.religions);
+      else if(slot === 'resources') out.resources = w.resources.map(r => r.trim()).filter(Boolean);
+      else out[slot] = (w[slot] || '').trim();
+    }
+    return out;
+  }
   return {legion:(w.legion || '').trim(), faction:(w.faction || '').trim(),
           rebels:(w.rebels || '').trim(),
           resources:w.resources.map(r => r.trim()).filter(Boolean),
@@ -4090,7 +4145,7 @@ async function cmapSave(){
   const c = state.cmap, d = c.det;
   if(!d || !d.w || c.busy) return;
   const total = cmapReligionTotal();
-  if(total !== 100 && d.has.religions){
+  if((!d.multi || d.multi.names.length < 2) && total !== 100 && d.has.religions){
     toast(`✗ The religion percentages total ${total}. The game crashes on load `
       + `unless they total 100 - ${total > 100 ? 'take' : 'add'} `
       + `${Math.abs(total - 100)} ${total > 100 ? 'off' : 'on'} before saving.`, 7000);
@@ -4102,27 +4157,38 @@ async function cmapSave(){
      Reforged's Fellowship, a file that campaign does not read. */
   const body = {mod:c.mod, campaign:c.campaign || '', region:d.name,
                 edits:cmapEdits()};
-  if(d.raw) body.raw_block = d.raw;
+  if(d.raw && (!d.multi || d.multi.names.length < 2)) body.raw_block = d.raw;
   c.busy = true;
-  let plan;
-  try{ plan = await api.post('/api/map/plan', body); }
+  const regions = d.multi && d.multi.names.length > 1 ? d.multi.names : [d.name];
+  let plans;
+  try{ plans = await Promise.all(regions.map(region => api.post('/api/map/plan',
+    Object.assign({}, body, {region})))); }
+  catch(e){ toast('✗ ' + errText(e), 7000); return; }
   finally{ c.busy = false; }
-  if(plan.error){ toast('✗ ' + plan.error, 7000); return; }
-  const p = plan.plan || {};
+  const ready = plans.filter(plan => !plan.error);
+  const failed = plans.find(plan => plan.error && plan.error !== 'nothing to change');
+  if(failed){ toast('✗ ' + failed.error, 7000); return; }
+  if(!ready.length){ toast('Nothing to change.'); return; }
+  const p = ready[0].plan || {};
   const lines = (p.changes || []).slice(0, 14);
-  const warn = (p.warnings || []).slice(0, 4).map(x => '⚠ ' + x);
-  if(!confirm(`Write: save ${d.name}?\n\n`
+  const warn = plans.flatMap(plan => (plan.plan?.warnings || []).slice(0, 2))
+    .map(x => '⚠ ' + x);
+  if(!confirm(`Write: save ${regions.length} region${regions.length === 1 ? '' : 's'}?\n\n`
     + (lines.join('\n') || 'no visible change')
     + ((p.changes || []).length > 14 ? `\n…and ${p.changes.length - 14} more` : '')
     + (warn.length ? '\n\n' + warn.join('\n') : '')
     + '\n\nmap.rwm is deleted too, or the game loads the old compiled map and '
     + 'shows none of this.\n\nBacked up first, and 🕑 Log can undo it.')) return;
   c.busy = true;
-  let res;
-  try{ res = await api.post('/api/map/apply', body); }
+  let results;
+  try{ results = [];
+    for(let i = 0; i < regions.length; i++) if(!plans[i].error)
+      results.push(await api.post('/api/map/apply', Object.assign({}, body, {region:regions[i]})));
+  }
   finally{ c.busy = false; }
-  if(res.error){ toast('✗ ' + res.error, 7000); return; }
-  toast('Saved. map.rwm deleted. 🕑 Log can undo it.');
+  const failedApply = results.find(res => res.error);
+  if(failedApply){ toast('✗ ' + failedApply.error, 7000); return; }
+  toast(`Saved ${regions.length} region${regions.length === 1 ? '' : 's'}. map.rwm deleted. 🕑 Log can undo it.`);
   // The region record is the only data this save changes.  Re-reading the
   // complete map recreated the workspace and could race its restored pick
   // against the region layer, clearing the settlement selected beside it.
