@@ -41,7 +41,7 @@ const CX_DEBOUNCE = 450;
 function cxNew(mod, faction){
   return {mod, faction, open: true, loading: false, err: '', d: null,
           pick: -1, w: null, busy: false, preview: null, timer: 0,
-          adding: false, tab: 'people'};
+          adding: false, tab: 'people', ownedUnitsOnly: false};
 }
 
 async function cxOpen(faction){
@@ -131,6 +131,27 @@ function cxSet(slot, value){
   if(!k || !k.w) return;
   k.w[slot] = value;
   cxPlanSoon();
+  cxPaint();
+}
+
+//: Pick from the faction's own `characters` or `women` section in
+//: descr_names.txt.  The server sends each separately, because mixing them
+//: would give a princess a male name and vice versa.
+function cxRandomName(){
+  const k = state.cx;
+  if(!k || !k.w || !k.d) return;
+  const names = ((k.d.vocab.names || {})[k.w.gender] || []);
+  if(!names.length){
+    toast(`✗ no ${k.w.gender} names for ${k.faction} in descr_names.txt`, 5000);
+    return;
+  }
+  cxSet('name', names[Math.floor(Math.random() * names.length)]);
+}
+
+function cxOwnedUnitsOnly(value){
+  const k = state.cx;
+  if(!k) return;
+  k.ownedUnitsOnly = value;
   cxPaint();
 }
 
@@ -418,6 +439,8 @@ function cxFormHtml(){
   const k = state.cx, w = k.w, v = k.d.vocab;
   const list = (slot, values) => `<datalist id="cxl-${slot}">${
     (values || []).map(x => `<option value="${esc(x)}">`).join('')}</datalist>`;
+  const names = [...new Set(Object.values(v.names || {}).flat())]
+    .sort((a, b) => a.localeCompare(b));
   return `<div class="cxform">
     <div class="csbtns cxsectionnav">
       <button onclick="cxSection('cxCharacterFields')">Character</button>
@@ -430,8 +453,11 @@ function cxFormHtml(){
         ${k.d.characters[k.pick].lines[0]}-${k.d.characters[k.pick].lines[1]}</span>`}
     </div>
     <div class="csrow2">
-      <div class="cmfield"><label>Name</label>
-        <input value="${esc(w.name)}" oninput="cxSet('name', this.value)"></div>
+      <div class="cmfield"><label>Name <button onclick="cxRandomName()"
+          title="Choose a random ${esc(w.gender)} name from this faction's descr_names.txt"
+          style="padding:1px 5px">↻</button></label>
+        <input list="cxl-name" value="${esc(w.name)}"
+          oninput="cxSet('name', this.value)">${list('name', names)}</div>
       <div class="cmfield"><label>Type</label>
         <select onchange="cxSet('type', this.value)">
           ${v.types.map(t => `<option value="${esc(t)}"${
@@ -545,12 +571,13 @@ function cxTraitsHtml(){
 function cxArmyHtml(){
   const k = state.cx, w = k.w, v = k.d.vocab;
   const guard = new Set(v.bodyguards || []);
+  const units = (v.units || []).filter(u => !k.ownedUnitsOnly || u.owned);
   const rows = w.army.map((a, i) => `<div class="cxbld">
     <select onchange="cxUnit(${i}, 'unit', this.value)">
-      ${v.units.map(u => `<option value="${esc(u.name)}"${
+      ${units.map(u => `<option value="${esc(u.name)}"${
         u.name === a.unit ? ' selected' : ''}>${esc(u.name)}${
         u.general ? ' ★' : ''}</option>`).join('')}
-      ${v.units.some(u => u.name === a.unit) ? ''
+      ${units.some(u => u.name === a.unit) ? ''
         : `<option value="${esc(a.unit)}" selected>${esc(a.unit)}</option>`}
     </select>
     <input type="number" min="0" max="9" value="${a.exp}" title="Experience"
@@ -570,9 +597,11 @@ function cxArmyHtml(){
       : ' · no export_descr_unit.txt on disk, so these are the names this'
         + ' campaign itself writes'}</span></div>
     <div class="cxblds">${rows || '<div class="count">No army.</div>'}</div>
+    <label class="count"><input type="checkbox"${k.ownedUnitsOnly ? ' checked' : ''}
+      onchange="cxOwnedUnitsOnly(this.checked)"> Faction-owned only</label>
     <div class="csadd"><select onchange="cxUnitAdd(this.value); this.value=''">
       <option value="">add a regiment…</option>
-      ${(v.units || []).map(u => `<option value="${esc(u.name)}">${esc(u.name)}${
+      ${units.map(u => `<option value="${esc(u.name)}">${esc(u.name)}${
         u.general ? ' ★' : ''}</option>`).join('')}</select></div>`;
 }
 
