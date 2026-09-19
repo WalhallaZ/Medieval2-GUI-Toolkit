@@ -404,7 +404,7 @@ async function cpaintDiscard(){
       + 'Nothing that has been saved is affected.')) return;
   await cpaintPost('paint_discard', {});
   toast('The map was re-read from disk.');
-  await loadCampmap();
+  await loadCampmap(true);
 }
 
 async function cpaintSave(){
@@ -431,7 +431,7 @@ async function cpaintSave(){
     + (camp ? `, and ${camp} campaign file${camp === 1 ? '' : 's'}` : '')
     + '. map.rwm deleted. 🕑 Log can undo it.', 6000);
   p.wiz = null; p.wizOpen = false; p.prog = null;
-  await loadCampmap();
+  await loadCampmap(true);
 }
 
 /* ---------- the new-region wizard ---------- */

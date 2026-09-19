@@ -171,7 +171,7 @@ async function rebAssign(){
   activity('rebels', `${k.mod}: ${names.length} province(s) -> ${k.target}`);
   k.sel = new Set();
   k.plan = null;
-  await loadCampmap();
+  await loadCampmap(true);
   if(state.reb) rebLoad();
 }
 

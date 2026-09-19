@@ -197,7 +197,7 @@ async function cclApply(){
   activity('climates',
            `${k.mod}: ${p.mode === 'add' ? 'declared' : 'took over'} ${p.code}`);
   k.plan = null;
-  await loadCampmap();
+  await loadCampmap(true);
 }
 
 /* ---------- drawing ---------- */
