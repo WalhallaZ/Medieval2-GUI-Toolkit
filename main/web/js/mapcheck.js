@@ -62,7 +62,7 @@ const CCHK_DOT = {fatal: '●', warn: '▲', note: '○'};
    the browser decided it. */
 function cchkNew(mod){
   return {mod, open: false, busy: false, err: '', rep: null, view: 'blocking',
-          ran: 0, plan: null, planFor: ''};
+          ran: 0, plan: null, planFor: [], planKeys: null, choices: {}};
 }
 
 function cchkOpen(){
@@ -93,7 +93,8 @@ function cchkToggle(){
 async function cchkRun(){
   const k = state.cchk;
   if(!k || k.busy) return;
-  k.busy = true; k.err = ''; k.plan = null;
+  k.busy = true; k.err = ''; k.plan = null; k.planFor = []; k.planKeys = null;
+  k.choices = {};
   cchkPaint();
   try{
     k.rep = await api.get(`/api/map/check?mod=${enc(k.mod)}${cmapCampQ()}`,
@@ -139,27 +140,46 @@ async function cchkBaseline(what){
    findings it would clear, and it is built by re-running the rule rather than
    from the list on the screen - so a fix cannot act on a finding that has
    stopped being true since the report was drawn. */
-async function cchkPlan(code, key){
+async function cchkPlan(codes, keys = null){
   const k = state.cchk;
-  const keys = key ? [key] : null;
-  const r = await cchkPost('fix_plan', keys ? {fixes: [code], keys} : {fixes: [code]});
+  const fixes = Array.isArray(codes) ? codes : [codes];
+  const body = {fixes};
+  if(keys) body.keys = keys;
+  const r = await cchkPost('fix_plan', body);
   if(!r) return;
   k.plan = r.plan && r.plan.ok ? r.plan : null;
-  k.planFor = k.plan ? code : '';
+  k.planFor = k.plan ? fixes : [];
   k.planKeys = k.plan ? keys : null;
   if(!k.plan && !k.err) k.err = (r.plan && r.plan.errors || []).join('; ')
     || 'nothing to fix';
   cchkPaint();
 }
 
+/* A row picks one action for its resource, without throwing away the choices
+   already made for other rows. The keys travel grouped by action, because the
+   server must never delete a resource selected to move. */
+function cchkChoice(code, findingKey){
+  const k = state.cchk;
+  if(k.choices[findingKey] === code) delete k.choices[findingKey];
+  else k.choices[findingKey] = code;
+  const keys = {};
+  Object.entries(k.choices).forEach(([key, choice]) => {
+    (keys[choice] || (keys[choice] = [])).push(key);
+  });
+  const fixes = Object.keys(keys);
+  if(!fixes.length) return cchkCancel();
+  return cchkPlan(fixes, keys);
+}
+
 async function cchkApply(){
   const k = state.cchk;
-  if(!k.planFor) return;
-  const r = await cchkPost('fix_apply', k.planKeys
-    ? {fixes: [k.planFor], keys: k.planKeys} : {fixes: [k.planFor]});
+  if(!k.planFor.length) return;
+  const body = {fixes: k.planFor};
+  if(k.planKeys) body.keys = k.planKeys;
+  const r = await cchkPost('fix_apply', body);
   if(!r || r.error) return;
-  const label = (cchkFix(k.planFor) || {}).label || k.planFor;
-  k.plan = null; k.planFor = ''; k.planKeys = null;
+  const label = k.planFor.map(code => (cchkFix(code) || {}).label || code).join(' + ');
+  k.plan = null; k.planFor = []; k.planKeys = null; k.choices = {};
   activity('map fix', `${label} - ${r.cleared} finding(s), id ${r.id}`);
   toast(`${label}: ${r.cleared} finding(s) fixed. Undo it in the Log.`, 6000);
   // The files on disk changed, so the map the screen is drawn from is stale.
@@ -314,15 +334,15 @@ function cchkRowHtml(f){
     : f.file ? `<button class="cpshape" onclick="cchkRevealKey('${f.key}')"
         title="Open ${esc(f.file)}${f.line ? ' at line ' + f.line : ''}"
         >\u{1F4C4} ${f.line ? 'line ' + f.line : 'file'}</button>` : '';
-  // A fix that names its own button acts on this one finding, not on every
-  // finding of its rule: smoothing a crossing is a choice made crossing by
-  // crossing.
-  const fx = f.fix ? cchkFix(f.fix) || {} : null;
-  const fix = !fx ? '' : fx.button
-    ? `<button class="cpshape" onclick="cchkPlan('${f.fix}', '${f.key}')"
-        title="${esc(fx.what || '')}">\u{1F527} ${esc(fx.button)}</button>`
-    : `<button class="cpshape" onclick="cchkPlan('${f.fix}')"
-        title="${esc(fx.what || '')}">\u{1F527} Fix</button>`;
+  const fix = f.fix === 'resource_position'
+    ? `<button class="cpshape${state.cchk.choices[f.key] === 'resource_position' ? ' on' : ''}"
+        onclick="cchkChoice('resource_position','${f.key}')"
+        title="${esc((cchkFix('resource_position') || {}).what || '')}">Delete</button>${
+        f.move ? `<button class="cpshape${state.cchk.choices[f.key] === 'resource_move' ? ' on' : ''}"
+          onclick="cchkChoice('resource_move','${f.key}')"
+          title="Move this resource to calculated land at ${f.move.join(',')}">Move</button>` : ''}`
+    : f.fix ? `<button class="cpshape" onclick="cchkPlan('${f.fix}')"
+        title="${esc((cchkFix(f.fix) || {}).what || '')}">\u{1F527} Fix</button>` : '';
   return `<div class="cchkrow${f.baseline ? ' was' : ''}">
     <span class="${sev}">${CCHK_DOT[f.severity] || '·'}</span>
     <div>
@@ -352,15 +372,18 @@ function cchkRevealKey(key){ const f = cchkFind(key); if(f) cchkReveal(f); }
 function cchkFixesHtml(rep){
   const k = state.cchk;
   const have = new Set(rep.findings.filter(f => f.fix).map(f => f.fix));
+  const movable = rep.findings.filter(f => f.move).length;
   if(!have.size) return '';
   const plan = k.plan;
   return `<div class="cchkfix">
     <div class="k">Auto-fixes <span class="count">Geomod's debugger actions, with
       one backup set and one Undo in the Log</span></div>
-    ${rep.fixes.filter(x => have.has(x.code)).map(x => {
-      const n = rep.findings.filter(f => f.fix === x.code).length;
+    ${rep.fixes.filter(x => have.has(x.code) || (x.code === 'resource_move' && movable))
+      .map(x => {
+      const n = x.code === 'resource_move' ? movable
+        : rep.findings.filter(f => f.fix === x.code).length;
       return `<div class="cchkfixrow">
-        <button class="cpshape${k.planFor === x.code && !k.planKeys ? ' on' : ''}"
+        <button class="cpshape${k.planFor.includes(x.code) ? ' on' : ''}"
           onclick="cchkPlan('${x.code}')">${esc(x.label)} (${n})</button>
         <div class="count">${esc(x.what)}</div>
       </div>`;
@@ -378,7 +401,7 @@ function cchkFixesHtml(rep){
 
 function cchkCancel(){
   const k = state.cchk;
-  k.plan = null; k.planFor = ''; k.planKeys = null;
+  k.plan = null; k.planFor = []; k.planKeys = null; k.choices = {};
   cchkPaint();
 }
 

@@ -33,20 +33,12 @@ not create is a tool nobody uses twice.
 the game runs) and ``note`` (worth knowing, not wrong). Only ``fatal`` blocks,
 and only when it is not in the baseline.
 
-Two of Geomod's debugger's three auto-fixes::
+Four auto-fix actions, including Geomod's debugger's three::
 
     heights_black       ambiguous (0,0,0) altitudes on land -> (1,1,1)
+    resource_duplicate  the second of two identical resource lines, deleted
     resource_position   a resource that is off the grid or in the sea, deleted
-
-The third, deleting a second identical resource line on one tile, is not here.
-The engine loads every copy onto the tile and into its province's resources,
-so a stacked resource is one the province trades, and mods stack them on
-purpose. There is nothing to report and nothing to delete.
-
-Two more are ours. ``ford_none`` clears a river crossing standing in open
-water, and ``crossing_smooth`` levels the ground around a crossing a battle
-would build a bridge in mid-air at (a modder's report: the battle map averages
-the 5x5 tiles around the fight). Smoothing is offered one crossing at a time.
+    resource_move       a resource in the sea -> its calculated nearest land
 
 Vanilla is the measurement for the first one, and it is a better example than
 the one this phase was scoped with. ``map_heights.tga`` has 55 tiles painted
@@ -69,9 +61,9 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
-from PIL import Image, ImageChops
+from PIL import Image
 
 from . import campmap, campstrat, mapvocab
 from .campaint import block
@@ -127,6 +119,8 @@ class Finding:
     what: str = ""
     #: the auto-fix that would clear this, or ``""``
     fix: str = ""
+    #: calculated game coordinates a resource in the sea can move to, or None
+    move: Optional[Tuple[int, int]] = None
     #: how many identical faults this row stands for, when a rule folded them
     count: int = 1
     #: filled in by :func:`run` from the mod's stamped baseline
@@ -141,7 +135,8 @@ class Finding:
         out = {"code": self.code, "severity": self.severity,
                "message": self.message, "file": self.file, "line": self.line,
                "tile": list(self.tile) if self.tile else None,
-               "game": None, "fix": self.fix, "count": self.count,
+               "game": None, "fix": self.fix,
+               "move": list(self.move) if self.move else None, "count": self.count,
                "baseline": self.baseline, "key": self.key}
         if self.tile and cm is not None:
             out["game"] = list(cm.game_xy(*self.tile))
@@ -654,14 +649,6 @@ def marker_faults(cm: CampaignMap, at: Sequence[int], kind: str,
             out.append({"code": "marker.ground", "fatal": True,
                         "tail": f"is standing on {g['name']}, which nothing can "
                                 f"stand on."})
-        elif kind == "settlement" and g["code"] == "forest_dense":
-            # A modder's report, and it fits the maps: not one settlement on
-            # the two installed here stands on dense forest.
-            out.append({"code": "marker.ground", "fatal": True,
-                        "tail": f"is standing on {g['name']}. A battle at "
-                                f"this settlement can crash building its "
-                                f"battle map; sparse forest or open ground "
-                                f"under the settlement is safe."})
         elif kind == "port" and g["code"] in mapvocab.SEA_GROUND:
             out.append({"code": "marker.ground", "fatal": False,
                         "tail": f"is standing on {g['name']}. A port pixel goes "
@@ -1154,142 +1141,6 @@ def _r_ford_in_sea(ck: Check) -> Iterable[Finding]:
             what=f"{x},{y}")
 
 
-#: How far, in grey levels of ``map_heights.tga``, a river crossing may sit
-#: from the average of the land around it. Measured, not given: on the two maps
-#: installed here the middle crossing is 1.5 off, 95 in 100 are under 11, and
-#: then there is a gap to the handful between 15 and 33 - the mountain passes.
-CROSSING_LIMIT = 15
-
-#: The battle map's reach around a crossing, in tiles each way: a 5x5 block.
-_CROSSING_REACH = 2
-
-
-def _land_heights(img: Image.Image) -> bytes:
-    """``map_heights.tga`` as one byte per corner: its height, 0 for sea.
-
-    The same reading as :func:`mapvocab.is_sea_height` - grey is land, and
-    anything not grey, or pure black, is water - for the whole layer at once in
-    Pillow's C, because the rule reads 121 corners around each crossing.
-    """
-    r, g, b = img.convert("RGB").split()
-    flat = ImageChops.lighter(ImageChops.difference(r, g),
-                              ImageChops.difference(g, b))
-    grey = flat.point([255 if v == 0 else 0 for v in range(256)])
-    return ImageChops.multiply(r, grey).tobytes()
-
-
-def crossing_offset(land: bytes, size: Tuple[int, int], x: int, y: int
-                    ) -> Optional[Tuple[int, float]]:
-    """``(height, average around it)`` for the crossing on tile ``x, y``.
-
-    A battle builds its ground out of the campaign heights of the 5x5 tiles
-    around it, and a crossing's bridge is placed against that ground. The
-    corners of those 25 tiles are the 11x11 pixels of ``map_heights.tga``
-    around the tile's own centre pixel; sea corners are left out, since a
-    bridge joins land. ``land`` is :func:`_land_heights`. None when the
-    crossing's own corner is sea.
-    """
-    vw, vh = size
-    h = land[(2 * y + 1) * vw + 2 * x + 1]
-    if not h:
-        return None
-    x0 = max(0, 2 * x - 2 * _CROSSING_REACH)
-    x1 = min(vw, 2 * x + 2 * _CROSSING_REACH + 3)
-    total = count = 0
-    for vy in range(max(0, 2 * y - 2 * _CROSSING_REACH),
-                    min(vh, 2 * y + 2 * _CROSSING_REACH + 3)):
-        row = land[vy * vw + x0:vy * vw + x1]
-        total += sum(row)
-        count += len(row) - row.count(0)
-    return h, total / count
-
-
-@rule("feature.crossing_uneven", "A river crossing on uneven ground", "warn",
-      "A modder's report: the battle map averages the 5x5 tiles around a "
-      "bridge, so a crossing under a mountain gets a bridge in mid-air")
-def _r_crossing_uneven(ck: Check) -> Iterable[Finding]:
-    """A crossing well below, or above, the ground a battle there is built on.
-
-    Reported by a modder who fixes these by hand: the battle map is the average
-    of the 5x5 tiles around the fight, so a bridge at height 0 beside a
-    mountain at 100 is set against ground at 50, and neither bank meets it.
-    The campaign map shows nothing wrong at all.
-    """
-    data = ck.px("features")
-    f = mapvocab.feature("river_crossing")
-    if not data or not f:
-        return
-    try:
-        img = ck.cm.layer("heights")
-    except MapError:
-        return
-    land = _land_heights(img)
-    n = 0
-    for x, y in _find(data, ck.width, f["rgb"]):
-        got = crossing_offset(land, img.size, x, y)
-        if got is None:
-            continue
-        h, mean = got
-        if abs(mean - h) <= CROSSING_LIMIT:
-            continue
-        n += 1
-        if n > ROW_MAX:
-            continue
-        side = "above" if mean > h else "below"
-        yield Finding(
-            "feature.crossing_uneven", "warn",
-            f"The river crossing at {x},{y} is at height {h}, and the land in "
-            f"the 5x5 tiles around it averages {mean:.0f}, {abs(mean - h):.0f} "
-            f"{side} it. A battle here is built on that average, so the bridge "
-            f"does not meet its banks and the battle map can be unplayable. "
-            f"Smooth levels the ground around the crossing and eases it back "
-            f"into the hills.",
-            file=ck.rel("map_heights.tga"), tile=(x, y),
-            fix="crossing_smooth", what=f"{x},{y}")
-
-
-def smooth_crossing(px, land: bytearray, size: Tuple[int, int], x: int, y: int
-                    ) -> int:
-    """Level the ground around one crossing until the rule is satisfied.
-
-    Every land corner is pulled toward the crossing's own height by how close
-    it is: fully inside a flat core of ``r`` corners, not at all from ``r + 4``
-    out, and in a straight line between. The core grows a corner at a time
-    until the 5x5 average is within half the limit, so a slight fault moves a
-    little ground and a mountain pass moves more, and the hills beyond keep
-    their shape. The crossing's height never moves - it is where the river is.
-    Sea corners are left alone, and land never goes below 1, which would read
-    as sea. ``land`` is :func:`_land_heights`, kept in step with ``px``.
-    Returns how many pixels changed.
-    """
-    vw, vh = size
-    got = crossing_offset(land, size, x, y)
-    if got is None:
-        return 0
-    h = got[0]
-    cx, cy = 2 * x + 1, 2 * y + 1
-    was: Dict[Tuple[int, int], int] = {}
-    for r in range(1, 4 * _CROSSING_REACH + 3):
-        reach = r + 4
-        for vy in range(max(0, cy - reach), min(vh, cy + reach + 1)):
-            for vx in range(max(0, cx - reach), min(vw, cx + reach + 1)):
-                old = was.get((vx, vy))
-                if old is None:
-                    old = land[vy * vw + vx]
-                    if not old:
-                        continue
-                    was[(vx, vy)] = old
-                d = max(abs(vx - cx), abs(vy - cy))
-                t = min(1.0, max(0.0, (d - r) / (reach - r)))
-                v = max(1, round(h + (old - h) * t))
-                px[vx, vy] = (v, v, v)
-                land[vy * vw + vx] = v
-        _, mean = crossing_offset(land, size, x, y)
-        if abs(mean - h) <= CROSSING_LIMIT / 2:
-            break
-    return sum(1 for (vx, vy), old in was.items() if px[vx, vy][0] != old)
-
-
 # ---------------------------------------------------------------------------
 # 6) heights - the ambiguous altitude, and Geomod's fix for it
 
@@ -1402,6 +1253,32 @@ def _resource_rows(ck: Check) -> List[Tuple[campstrat.Node, int, int]]:
     return out
 
 
+def duplicate_message(name: str, x: int, gy: int, line: int) -> str:
+    """The one wording of a resource written twice on a tile, which
+    :mod:`stratobj` also says of a save that would make one."""
+    return (f"a second `{name}` at {x},{gy}; line {line} already puts one "
+            f"there. The engine takes one and the other is a line nobody will "
+            f"ever find.")
+
+
+@rule("strat.resource_duplicate", "The same resource twice on one tile", "warn",
+      "Geomod's debugger action: duplicate resources")
+def _r_resource_duplicate(ck: Check) -> Iterable[Finding]:
+    seen: Dict[Tuple[str, int, int], campstrat.Node] = {}
+    for n, x, iy in _resource_rows(ck):
+        k = (n.name.lower(), x, iy)
+        first = seen.get(k)
+        if first is None:
+            seen[k] = n
+            continue
+        yield Finding(
+            "strat.resource_duplicate", "warn",
+            duplicate_message(n.name, x, ck.cm.terrain.game_y(iy),
+                              first.start + 1),
+            file=ck.strat_rel, line=n.start + 1, tile=(x, iy),
+            fix="resource_duplicate", what=f"{n.name.lower()}|{x},{iy}|dup")
+
+
 def position_faults(cm: CampaignMap, x: int, gy: int,
                     sea: Optional[bytes] = None) -> List[dict]:
     """What is wrong with the tile a resource, an event or a disaster is on.
@@ -1462,6 +1339,7 @@ def _r_resource_position(ck: Check) -> Iterable[Finding]:
                 + _land_clause(f, (x, gy)),
                 file=ck.strat_rel, line=n.start + 1,
                 tile=None if off else (x, iy), fix="resource_position",
+                move=f["near"] if f["code"] == "sea" else None,
                 what=f"{n.name.lower()}|{x},{gy}|{f['code']}")
 
 
@@ -1990,15 +1868,13 @@ FIXES: Dict[str, dict] = {
                 "feature at all. The tile goes back to being the sea its "
                 "altitude already says it is; nothing else on the layer moves.",
     },
-    "crossing_smooth": {
-        "label": "Smooth the ground around uneven river crossings",
-        "button": "Smooth",
-        "rule": "feature.crossing_uneven",
-        "file": "map_heights.tga",
-        "what": "The land around the crossing is pulled toward the crossing's "
-                "own height: flat right beside it, easing back into the hills "
-                "further out, and only as far as it takes. The crossing and "
-                "the sea do not move.",
+    "resource_duplicate": {
+        "label": "Delete duplicate resource lines",
+        "rule": "strat.resource_duplicate",
+        "file": "",
+        "what": "The second and later of two identical `resource` lines are "
+                "removed. The first one, which is the one the engine uses, "
+                "stays exactly where it is.",
     },
     "resource_position": {
         "label": "Delete resources that are off the map or in the sea",
@@ -2006,6 +1882,14 @@ FIXES: Dict[str, dict] = {
         "file": "",
         "what": "A resource nothing on land can reach is removed. There is no "
                 "position to move it to that would not be a guess.",
+    },
+    "resource_move": {
+        "label": "Move resources in the sea to calculated land",
+        "rule": "strat.resource_position",
+        "file": "",
+        "what": "Each resource in the sea moves to the nearest land tile the "
+                "validator calculated. Resources off the map stay available "
+                "only for deletion.",
     },
 }
 
@@ -2039,15 +1923,17 @@ class FixPlan:
 
 
 def plan_fix(mod, codes: Sequence[str], cm: Optional[CampaignMap] = None,
-             campaign: str = "", keys: Optional[Sequence[str]] = None
+             campaign: str = "",
+             keys: Optional[Union[Sequence[str], Mapping[str, Sequence[str]]]] = None
              ) -> FixPlan:
     """What the chosen fixes would write.
 
     The rules are re-run here rather than trusting a report the browser sent
     back: a fix acts on the map as it is at the moment of the fix, and a stale
     finding list is how a tool ends up deleting the wrong line. ``keys`` narrows
-    it to particular findings; without it, a fix takes every finding its rule
-    produces.
+    it to particular findings; a mapping gives each action its own finding keys,
+    so one plan can move some resources and delete others. Without it, a fix
+    takes every finding its rule produces.
     """
     cm = cm or CampaignMap(mod)
     p = FixPlan(mod=mod, codes=[c for c in codes if c in FIXES])
@@ -2060,18 +1946,25 @@ def plan_fix(mod, codes: Sequence[str], cm: Optional[CampaignMap] = None,
         p.errors.append("no fix was chosen")
         return p
     ck = Check(mod, cm, campaign)
-    want = set(keys) if keys else None
+    wants = ({str(code): set(values) for code, values in keys.items()}
+             if isinstance(keys, Mapping) else None)
+    want = set(keys) if keys and wants is None else None
 
     found: Dict[str, List[Finding]] = {}
     for code in p.codes:
         r = RULE_BY_CODE[FIXES[code]["rule"]]
         try:
-            got = [f for f in (r.fn(ck) or ()) if f.fix == code]
+            got = list(r.fn(ck) or ())
         except Exception as exc:                       # noqa: BLE001
             p.errors.append(f"{r.code} could not be re-checked: {exc}")
             continue
-        if want is not None:
-            got = [f for f in got if f.key in want]
+        if code == "resource_move":
+            got = [f for f in got if f.move is not None]
+        else:
+            got = [f for f in got if f.fix == code]
+        chosen = wants.get(code, set()) if wants is not None else want
+        if chosen is not None:
+            got = [f for f in got if f.key in chosen]
         found[code] = got
         p.cleared.extend(got)
     if p.errors:
@@ -2084,10 +1977,11 @@ def plan_fix(mod, codes: Sequence[str], cm: Optional[CampaignMap] = None,
         _plan_heights(ck, p)
     if found.get("ford_none"):
         _plan_fords(ck, p, [f.tile for f in found["ford_none"] if f.tile])
-    if found.get("crossing_smooth"):
-        _plan_smooth(ck, p, [f.tile for f in found["crossing_smooth"] if f.tile])
-    drop = sorted({f.line - 1 for f in found.get("resource_position", ())
-                   if f.line > 0})
+    if found.get("resource_move"):
+        _plan_resource_moves(ck, p, found["resource_move"])
+    drop = sorted({f.line - 1 for code in ("resource_duplicate",
+                                           "resource_position")
+                   for f in found.get(code, ()) if f.line > 0})
     if drop:
         _plan_strat(ck, p, drop)
     if not p.data and not p.text and not p.errors:
@@ -2172,27 +2066,44 @@ def _plan_fords(ck: Check, p: FixPlan, tiles: Sequence[Tuple[int, int]]) -> None
                      f"in open water cleared to no feature")
 
 
-def _plan_smooth(ck: Check, p: FixPlan, tiles: Sequence[Tuple[int, int]]) -> None:
-    """Level the ground around each uneven crossing - :func:`smooth_crossing`."""
-    cm = ck.cm
-    try:
-        img = cm.layer("heights").convert("RGB")
-        info = cm.info("heights")
-    except MapError as exc:
-        p.errors.append(f"map_heights.tga could not be read: {exc}")
+def _plan_resource_moves(ck: Check, p: FixPlan,
+                         findings: Sequence[Finding]) -> None:
+    """Move sea resources to the land tile their finding calculated.
+
+    The finding is re-run immediately before this plan is made, so its target
+    comes from the map as it stands now rather than from coordinates supplied
+    by the browser. :func:`stratobj.render_line` keeps the resource line's
+    spelling, whitespace and comment intact while changing only its numbers.
+    """
+    if ck.strat is None:
+        p.errors.append("descr_strat.txt could not be read, so resources cannot "
+                        "be moved")
         return
-    px = img.load()
-    land = bytearray(_land_heights(img))
-    moved = sum(smooth_crossing(px, land, img.size, x, y) for x, y in tiles)
+    from . import stratobj
+    lines = list(ck.strat.lines)
+    moved = []
+    for f in findings:
+        if f.line <= 0 or f.move is None:
+            continue
+        node = ck.strat.node_at(f.line - 1)
+        if node is None or node.kind != "resource":
+            p.errors.append("a resource to move no longer has a readable line")
+            return
+        before = stratobj.read_spec(node)
+        after = stratobj.Spec(**before.payload())
+        after.x, after.y = f.move
+        lines[node.start] = stratobj.render_line(lines[node.start], before, after)
+        moved.append((before.name, before.x, before.y, after.x, after.y))
     if not moved:
         return
-    try:
-        p.data[ck.rel("map_heights.tga")] = encode(img, info)
-    except Exception as exc:                           # noqa: BLE001
-        p.errors.append(f"map_heights.tga could not be re-encoded: {exc}")
-        return
-    p.changes.append(f"map_heights.tga: {moved:,} pixel(s) levelled around "
-                     f"{len(tiles):,} river crossing(s)")
+    sf = ck.strat
+    p.text[ck.strat_rel] = (sf.newline.join(lines)
+                            + (sf.newline if sf.trailing_newline else ""))
+    p.changes.append(
+        f"{campstrat.STRAT_NAME}: {len(moved)} resource(s) moved to calculated "
+        "land " + ", ".join(f"`{name}` {x},{y} -> {nx},{ny}"
+                            for name, x, y, nx, ny in moved[:4])
+        + ("…" if len(moved) > 4 else ""))
 
 
 def _plan_strat(ck: Check, p: FixPlan, drop: Sequence[int]) -> None:
@@ -2207,7 +2118,12 @@ def _plan_strat(ck: Check, p: FixPlan, drop: Sequence[int]) -> None:
         p.errors.append("descr_strat.txt could not be read, so nothing in it "
                         "can be fixed")
         return
-    lines = list(ck.strat.lines)
+    sf = ck.strat
+    planned = p.text.get(ck.strat_rel)
+    lines = (planned.split(sf.newline) if planned is not None
+             else list(sf.lines))
+    if planned is not None and sf.trailing_newline:
+        lines.pop()
     gone = []
     for i in sorted(set(drop), reverse=True):
         if 0 <= i < len(lines):
@@ -2215,7 +2131,6 @@ def _plan_strat(ck: Check, p: FixPlan, drop: Sequence[int]) -> None:
             del lines[i]
     if not gone:
         return
-    sf = ck.strat
     p.text[ck.strat_rel] = (sf.newline.join(lines)
                             + (sf.newline if sf.trailing_newline else ""))
     p.changes.append(f"{campstrat.STRAT_NAME}: {len(gone)} line(s) deleted "
