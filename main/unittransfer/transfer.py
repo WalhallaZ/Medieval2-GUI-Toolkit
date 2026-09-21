@@ -358,6 +358,9 @@ class TransferPlan:
     soldier_anim_changed: Tuple[str, str] = ("", "")
     missing_assets: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    # Fatal planner findings that do not fit the more specific base/option fields.
+    # Keep these separate so callers can render every blocking problem together.
+    errors: List[str] = field(default_factory=list)
 
     @property
     def models_mode(self) -> bool:
@@ -468,6 +471,9 @@ class TransferPlan:
     def summary(self) -> str:
         L = [f"{'Import battle models of' if self.models_mode else 'Transfer'} "
              f"'{self.unit_type}'  {self.source.name} -> {self.dest.name}"]
+        if self.errors:
+            L.extend("  ! ERROR: " + error for error in self.errors)
+            return "\n".join(L)
         if self.base_error:
             L.append("  ! BASE ERROR: " + self.base_error)
             return "\n".join(L)
@@ -2307,6 +2313,8 @@ def _build_unit_block(plan: TransferPlan, unit) -> str:
 
 def apply_transfer(plan: TransferPlan) -> Dict:
     """Apply the plan in-place into the destination mod, with backups + a log record."""
+    if plan.errors:
+        raise ValueError("cannot apply: " + "; ".join(plan.errors))
     if plan.base_error:
         raise ValueError("cannot apply: " + plan.base_error)
     if plan.option_error:
