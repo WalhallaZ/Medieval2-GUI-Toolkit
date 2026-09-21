@@ -676,7 +676,7 @@ class TransferPlan:
 SLOT_ORDER = ("soldier", "mount", "officer", "armour")
 
 
-def model_slots_for(source: Mod, unit, base_groups=()) -> Dict[str, str]:
+def model_slots_for(source: Mod, unit, base_groups=(), mount_name=None) -> Dict[str, str]:
     """``model name (lower) -> slot``, first slot in :data:`SLOT_ORDER` wins."""
     slots: Dict[str, str] = {}
 
@@ -688,8 +688,9 @@ def model_slots_for(source: Mod, unit, base_groups=()) -> Dict[str, str]:
     base_groups = set(base_groups)
     if "soldier" not in base_groups:
         put(getattr(unit, "soldier_model", ""), "soldier")
-    if "mount" not in base_groups and getattr(unit, "mount", ""):
-        put(source.mount_model(unit.mount), "mount")
+    mount_name = getattr(unit, "mount", "") if mount_name is None else mount_name
+    if "mount" not in base_groups and mount_name:
+        put(source.mount_model(mount_name), "mount")
     if "officer" not in base_groups:
         for o in unit.officers:
             put(o, "officer")
@@ -745,7 +746,7 @@ def unit_model_index(source: Mod, unit_type: str) -> List[Dict]:
 
 
 def _secondary_model_names(source: Mod, unit, opts: TransferOptions,
-                           base_groups=()):
+                           base_groups=(), mount_name=None):
     """Return (included_models, excluded_models).
 
     A group listed in ``base_groups`` comes from the base unit, so the source's
@@ -775,8 +776,9 @@ def _secondary_model_names(source: Mod, unit, opts: TransferOptions,
         for off in unit.officers:
             route(off, opts.include_officers)
 
-    if unit.mount and "mount" not in base_groups:
-        mm = source.mount_model(unit.mount)
+    mount_name = unit.mount if mount_name is None else mount_name
+    if mount_name and "mount" not in base_groups:
+        mm = source.mount_model(mount_name)
         if mm:
             route(mm, opts.include_mount)
 
@@ -1452,26 +1454,38 @@ def _resolve_sound(plan: "TransferPlan", dest: Mod) -> None:
         "(the entry only works if both point at the same block).")
 
 
-def _override_projectiles(opts: TransferOptions) -> List[str]:
-    """Projectiles named by a hand-set ``stat_pri`` / ``stat_sec`` override.
+def _projectiles_from_stat(value: str) -> List[str]:
+    """The projectile named by a ``stat_pri`` or ``stat_sec`` field value."""
+    parts = [p.strip() for p in value.split(",")]
+    if len(parts) > 2 and parts[2] and parts[2].lower() != "no":
+        return [parts[2]]
+    return []
 
-    With a base unit (or a replaced one) the stats - and therefore the projectile -
-    normally come from the destination, so nothing has to be ported. Switching one
-    of those two fields back to the transferred unit's value (the composer's B
-    button, which is exactly how "import the individual stats" works when
-    replacing a unit) puts a SOURCE projectile name in the block, and that name
-    means nothing in the destination unless its definition comes along too.
+
+def _effective_projectiles(unit, opts: TransferOptions, has_base: bool) -> List[str]:
+    """Projectile dependencies of the EDU block that will actually be written.
+
+    A base supplies stat lines unless one is overridden. Without a base, the
+    source supplies them unless overridden. In both cases dependency planning
+    must use the final value, otherwise changing a projectile imports the old
+    definition and leaves the edited EDU line dangling.
     """
     out: List[str] = []
     for key in ("stat_pri", "stat_sec"):
-        val = opts.field_overrides.get(key)
-        if not val:
+        if key in opts.field_overrides:
+            out.extend(_projectiles_from_stat(opts.field_overrides[key]))
             continue
-        parts = [p.strip() for p in val.split(",")]
-        # slot 3 of the CSV is the projectile ("no" for a melee weapon)
-        if len(parts) > 2 and parts[2] and parts[2].lower() != "no":
-            out.append(parts[2])
-    return out
+        if not has_base:
+            stat = getattr(unit, key, [])
+            if len(stat) > 2 and stat[2].strip() and stat[2].strip().lower() != "no":
+                out.append(stat[2].strip())
+    seen, resolved = set(), []
+    for projectile in out:
+        key = projectile.lower()
+        if key not in seen:
+            seen.add(key)
+            resolved.append(projectile)
+    return resolved
 
 
 def _follow_soldier_upgrades(plan: "TransferPlan", unit) -> None:
@@ -1859,7 +1873,16 @@ def plan_transfer(source: Mod, unit_type: str, dest: Mod,
     # being a base group altogether (its model, its EDU line and its
     # descr_mount.txt block all come from the source, exactly as if the box said
     # "source"), and the base's mount is kept only as the animation donor below.
-    import_mount, anim_donor = mount_base_import(plan.base_unit, dest, unit, opts)
+    # A hand-set mount is the mount that will be written, including when the
+    # normal mount group comes from a base. Do not import the source unit's old
+    # mount merely because the base-animation option is enabled.
+    mount_overridden = "mount" in opts.field_overrides
+    effective_mount = (unit.mount if models else
+                       opts.field_overrides.get("mount", unit.mount) or "").strip()
+    import_mount, anim_donor = ((False, None) if mount_overridden else
+                                mount_base_import(plan.base_unit, dest, unit, opts))
+    if mount_overridden:
+        plan.base_field_groups = [g for g in plan.base_field_groups if g != "mount"]
     if import_mount:
         plan.base_field_groups = [g for g in plan.base_field_groups if g != "mount"]
         plan.mount_from_base_import = True
@@ -1879,7 +1902,8 @@ def plan_transfer(source: Mod, unit_type: str, dest: Mod,
     _follow_soldier_upgrades(plan, unit)
 
     included, excluded = _secondary_model_names(source, unit, opts,
-                                                plan.base_field_groups)
+                                                plan.base_field_groups,
+                                                mount_name=effective_mount)
     # `models` mode picks its entries off the unit's own affiliations and the
     # user's tick boxes instead. The include boxes play no part: they answer
     # "which secondaries does the unit still need", which only means anything
@@ -1904,7 +1928,8 @@ def plan_transfer(source: Mod, unit_type: str, dest: Mod,
     # animations the Soldier row can make go away (see soldier_skeletons_missing).
     if unit.soldier_model and "soldier" not in plan.base_field_groups:
         plan.soldier_model_name = unit.soldier_model.lower()
-    plan.model_slots = model_slots_for(source, unit, plan.base_field_groups)
+    plan.model_slots = model_slots_for(source, unit, plan.base_field_groups,
+                                       mount_name=effective_mount)
     _check_base_soldier_animations(plan, source, dest, unit)
     if excluded:
         plan.warnings.append(
@@ -2017,28 +2042,28 @@ def plan_transfer(source: Mod, unit_type: str, dest: Mod,
     # The EDU's `mount` field names a block here, and that block's `model` field
     # names the modeldb entry (copied above). Without the block the destination
     # has a dangling mount reference and the unit never shows up in game.
-    if unit.mount and "mount" not in plan.base_field_groups and not models:
-        src_m = source.mount_def(unit.mount)
+    if effective_mount and "mount" not in plan.base_field_groups and not models:
+        src_m = source.mount_def(effective_mount)
         if src_m is None:
             plan.mount_action = "missing"
             plan.warnings.append(
-                f"mount '{unit.mount}' has no entry in the source descr_mount.txt")
+                f"mount '{effective_mount}' has no entry in the source descr_mount.txt")
         else:
-            dst_m = dest.mount_def(unit.mount)
+            dst_m = dest.mount_def(effective_mount)
             if dst_m is not None and dst_m.content_equals(src_m):
                 plan.mount_action = "reuse"
                 plan.mount_name = dst_m.type
             elif dst_m is not None:
                 new_name = mounts.unique_mount_name(
-                    unit.mount, dest.mount_file.by_type(), _tag(source))
+                    effective_mount, dest.mount_file.by_type(), _tag(source))
                 plan.mount_action = "rename"
                 plan.mount_name = new_name
-                plan.mount_rename = (unit.mount, new_name)
+                plan.mount_rename = (effective_mount, new_name)
                 plan.mount_raw = mounts.rewrite_mount_raw(
                     src_m.raw, type_new=new_name, model_map=plan.model_renames)
             else:
                 plan.mount_action = "add"
-                plan.mount_name = unit.mount
+                plan.mount_name = effective_mount
                 plan.mount_raw = mounts.rewrite_mount_raw(
                     src_m.raw, model_map=plan.model_renames)
             if plan.mount_raw and not opts.include_mount:
@@ -2061,8 +2086,8 @@ def plan_transfer(source: Mod, unit_type: str, dest: Mod,
     # engine block is copied verbatim and would otherwise dangle. Effects are NOT
     # ported: any effect-set the destination lacks becomes a harmless placeholder.
     if opts.include_projectile and not models:
-        wanted_projectiles = (list(unit.projectiles()) if plan.base_unit is None
-                              else _override_projectiles(opts))
+        wanted_projectiles = _effective_projectiles(unit, opts,
+                                                    plan.base_unit is not None)
         wanted_projectiles += plan.engine_projectiles
         _resolve_projectiles(plan, source, dest, wanted_projectiles, opts)
 
@@ -2285,9 +2310,6 @@ def _build_unit_block(plan: TransferPlan, unit) -> str:
     # the mount definition was renamed to dodge a clash -> point the EDU at it
     if plan.mount_rename:
         block = edu_mod.set_field(block, "mount", plan.mount_rename[1])
-    # a projectile was renamed on collision -> repoint the stat_pri/stat_sec token
-    if plan.projectile_renames:
-        block = edu_mod.rewrite_stat_projectile(block, plan.projectile_renames)
     # a siege engine was renamed to dodge a clash -> point the EDU at the new name
     for field_key, new_name in plan.engine_renames.items():
         block = edu_mod.set_field(block, field_key, new_name)
@@ -2304,7 +2326,22 @@ def _build_unit_block(plan: TransferPlan, unit) -> str:
     for k, v in plan.options.field_overrides.items():
         if k in locked:
             continue
+        # A renamed mount has already been written above. Re-applying the typed
+        # source name here would undo that collision resolution and leave a
+        # dangling mount reference.
+        if k == "mount" and plan.mount_rename:
+            continue
+        # An empty era line is invalid EDU and crashes the game. Clearing an era
+        # ownership list means remove its field, whether it came from the source
+        # or was inherited from a base, rather than serialising a blank value.
+        if k in ("era 1", "era 2") and not v.strip():
+            block = edu_mod.remove_field(block, k)
+            continue
         block = edu_mod.set_field(block, k, v)
+    # Do this after field overrides: an edited stat line can be the one that
+    # named a colliding projectile, so it too must point at the resolved name.
+    if plan.projectile_renames:
+        block = edu_mod.rewrite_stat_projectile(block, plan.projectile_renames)
     # 5) mercenary flag last, so a manual `attributes` override can't drop it
     if plan.mercenary:
         block = edu_mod.add_attribute(block, MERC_ATTR)
