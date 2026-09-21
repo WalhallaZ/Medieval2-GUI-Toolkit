@@ -4,10 +4,12 @@ Run with: ``python -m tests.test_descr_model_battle`` from ``main/``.
 """
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import PropertyMock, patch
 
 from unittransfer import dmb, modeldb
 from unittransfer.mod import Mod
+from unittransfer.transfer import TransferOptions, apply_transfer, plan_transfer
 
 
 SOURCE = """; descriptor preamble\n\n\
@@ -39,6 +41,22 @@ changed = modeldb.add_texture_factions(changed, ["france"], prefer="england")
 entry = modeldb.parse_entry_text(changed)
 check("path rewrite stays in descriptor syntax", entry.lods[0][0] == "unit_models/new/one.mesh")
 check("faction clone works for descriptor textures", any(t.faction == "france" for t in entry.main_textures))
+
+# A legacy modeldb record cannot be written into an M2EX descriptor and vice versa.
+# The planner must reject that pair cleanly instead of raising while recording it.
+unit = SimpleNamespace(dictionary="knight")
+source = SimpleNamespace(name="legacy", edu=SimpleNamespace(by_type=lambda: {"knight": unit}),
+                         modeldb=SimpleNamespace(format="modeldb"))
+dest = SimpleNamespace(name="descriptor", modeldb=SimpleNamespace(format="dmb"))
+mismatch = plan_transfer(source, "knight", dest, TransferOptions())
+check("mixed battle-model formats are recorded as an error", bool(mismatch.errors))
+try:
+    apply_transfer(mismatch)
+except ValueError as exc:
+    check("mixed battle-model formats cannot be applied",
+          "different battle-model formats" in str(exc))
+else:
+    check("mixed battle-model formats cannot be applied", False)
 
 with TemporaryDirectory() as temp:
     root = Path(temp) / "mod"
