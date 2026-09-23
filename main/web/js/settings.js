@@ -102,6 +102,8 @@ async function openSettings(){
         <div id="rootStatus" class="count" style="margin-top:8px"></div>
       </fieldset>
       <fieldset><legend>Launcher</legend>
+        <label class="chk"><input type="checkbox" id="browserChk" ${s.open_browser===false?'':'checked'} onchange="saveBrowserLaunch()">
+          Open the browser automatically <span class="count">(off: the launcher prints the local address for you to copy)</span></label>
         <label class="chk"><input type="checkbox" id="consoleChk" ${s.show_console?'checked':''} onchange="saveConsole()">
           Keep the console window open <span class="count">(the tool reads this when it starts, so
           it applies from the next launch)</span></label>

@@ -1297,6 +1297,10 @@ async function saveConsole(){
   const on=document.getElementById('consoleChk').checked;
   state.settings=await api.post('/api/settings',{show_console:on});
   toast(on?'Console will show on the next launch.':'Console hidden from the next launch.');}
+async function saveBrowserLaunch(){
+  const on=document.getElementById('browserChk').checked;
+  state.settings=await api.post('/api/settings',{open_browser:on});
+  toast(on?'Browser will open automatically on the next launch.':'The launcher will print the address on the next launch.');}
 async function quitServer(){
   if(!confirm('Stop the Medieval 2 GUI Toolkit server?\n\nThe page will stop working until you launch it again.'))return;
   try{await api.post('/api/quit',{});}catch(e){}
