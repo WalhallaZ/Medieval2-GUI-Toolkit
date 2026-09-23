@@ -83,3 +83,4 @@ Thumbs.db
 
 # dev/checks/run_suites.py writes its report here
 main/dev/checks/suite_report.*
+.venv
