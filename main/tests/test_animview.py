@@ -14,8 +14,10 @@
    overlap, the blend halfway through it, the pelvis pinned, a rider known.
 """
 import json
+import io
 import math
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -46,6 +48,14 @@ def same_keys(a, b, tol=1e-5):
             if any(abs(p - q) > tol for p, q in zip(x["rot"] + x["pos"], y["rot"] + y["pos"])):
                 return False
     return True
+
+
+# ---- 0) summary values -----------------------------------------------------------
+print("\n0) animation summary values")
+nan_summary = animview._summary(None, io.BytesIO(struct.pack("<8f", 1.25, 2.5, 0, 0, 0, math.nan, 0, 0)),
+                                animpack.PackEntry("nan.cas", 0, 40, frames=1))
+check("a non-finite pack summary value is omitted so the action list stays valid JSON",
+      nan_summary["speed"] is None and json.dumps(nan_summary, allow_nan=False))
 
 
 if not (GAME / "data").is_dir():

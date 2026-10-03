@@ -39,6 +39,7 @@ says so. A skeleton the packs have not got falls back to Phase 55's chain,
 """
 from __future__ import annotations
 
+import math
 import re
 import struct
 from pathlib import Path
@@ -61,11 +62,17 @@ packs_for = animpack.packs_for
 
 def _summary(packs: animpack.Packs, fid, entry: animpack.PackEntry) -> dict:
     """The index record's counts and the entry's eight summary floats, which
-    are its last 40 bytes but the mask."""
+    are its last 40 bytes but the mask.
+
+    Some valid game packs use a NaN in an unused summary field.  JavaScript's
+    JSON parser rejects Python's ``NaN`` spelling, so leave that display value
+    absent instead of making the whole action list unreadable.
+    """
     fid.seek(entry.offset + entry.size - 40)
     s = struct.unpack("<8f", fid.read(32))
-    return {"frames": entry.frames, "duration": round(s[0], 3), "distance": round(s[1], 3),
-            "speed": round(s[5], 3)}
+    value = lambda n: round(n, 3) if math.isfinite(n) else None
+    return {"frames": entry.frames, "duration": value(s[0]), "distance": value(s[1]),
+            "speed": value(s[5])}
 
 
 def _truly_loose(p: Path) -> bool:
